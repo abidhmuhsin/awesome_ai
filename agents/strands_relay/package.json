@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/agent.ts",
+    "mcp-server": "tsx src/mcp/mcp-server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
     "@strands-agents/sdk": "latest",
     "dotenv": "latest",
     "openai": "latest",

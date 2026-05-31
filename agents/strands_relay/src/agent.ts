@@ -4,6 +4,7 @@ import { OpenAIModel } from '@strands-agents/sdk/models/openai'
 import { createOpenRouterUsageFetch, logUsage } from './telemetry/openrouter-usage.js'
 import { createInterface } from 'readline'
 import { helloTool, byebyeTool } from './tools/index.js'
+import { mcpClient } from './mcp/index.js'
 
 const model = new OpenAIModel({
   api: 'chat',
@@ -19,13 +20,15 @@ const model = new OpenAIModel({
   maxTokens: 500,
 })
 
+
+
 const agent = new Agent({
   model,
   systemPrompt: 'You are a friendly chat assistant. You have two tools:\n' +
     '- hello: use only when the user says hello or introduces themselves for the first time\n' +
     '- byebye: use only when the user explicitly says goodbye or wants to end the chat\n' +
     'For normal conversation, just reply naturally without calling any tool.',
-  tools: [helloTool, byebyeTool],
+  tools: [helloTool, byebyeTool, mcpClient],
   printer: false,
 })
 
