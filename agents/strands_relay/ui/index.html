@@ -397,8 +397,15 @@
       })
 
       ws.addEventListener('message', (evt) => {
-        removeTyping()
         const msg = JSON.parse(evt.data)
+        
+        // Show typing indicator when agent starts processing
+        if (msg.type === 'typing') {
+          showTyping()
+          return
+        }
+        
+        removeTyping()
         appendMessage(msg.type, msg.text)
       })
     }

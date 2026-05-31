@@ -50,6 +50,8 @@ export async function startWebSocket(port = 3000) {
       ws.send(JSON.stringify({ type: 'user', text }))
 
       try {
+        // Send typing indicator
+        ws.send(JSON.stringify({ type: 'typing', text: '' }))
         const t0 = Date.now()
         const result = await agent.invoke(text)
         const reply = extractText(agent) ?? '(no response)'
