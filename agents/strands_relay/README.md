@@ -29,6 +29,9 @@ OPENAI_API_KEY=sk-your-key npm start -- Abidh
 # Web UI mode
 npm run ui                # opens at http://localhost:3000
 npm run ui -- --port 4000 # custom port
+
+# Telegram bot mode
+npm run telegram          # requires TELEGRAM_BOT_TOKEN in .env
 ```
 
 Expected output is the agent response based on the tool result:
@@ -43,12 +46,14 @@ Hello, Abidh! This response came from the hello tool.
 src/
 ├── cli.ts                        # CLI entry point → npm start
 ├── ui-server.ts                  # UI entry point → npm run ui
+├── telegram.ts                   # Telegram entry point → npm run telegram
 ├── agent/
 │   ├── factory.ts                # createAgent() — shared config
 │   ├── helpers.ts                # extractText(), wasByebyeCalled()
 │   └── transports/
 │       ├── cli.ts                # readline REPL transport
-│       └── websocket.ts          # Express + WebSocket transport
+│       ├── websocket.ts          # Express + WebSocket transport
+│       └── telegram.ts           # Telegram bot transport
 ├── mcp/
 │   ├── index.ts                  # MCP client exports
 │   ├── mcp-clients.ts            # MCP client configurations (stdio, HTTP)
@@ -82,6 +87,37 @@ Each browser connection gets its own agent instance. The UI features:
 - Typing indicator while agent processes
 
 The UI files are in `ui/` — a single `index.html` with no build step required.
+
+## Telegram Bot
+
+Run the agent as a Telegram bot:
+
+```bash
+# 1. Create a bot via @BotFather and get the token
+# 2. Set it in .env:
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
+
+# 3. Start the bot
+npm run telegram
+```
+
+Each Telegram chat gets its own isolated agent session.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Start a new session |
+| `/help` | Show available commands |
+| `/session` | Check if you have an active session |
+| `/end` | End the current session |
+
+### How it works
+
+- Sending any text message automatically creates a session if none exists.
+- The agent processes the message and replies directly in the chat.
+- Saying *bye* or *goodbye* triggers the `byebye` tool which ends the session.
+- Long responses are split into chunks (Telegram's 4096-char limit).
 
 ## Local Tools
 
