@@ -1,18 +1,9 @@
 import 'dotenv/config'
-import { Agent, type ToolResultContent, tool } from '@strands-agents/sdk'
+import { Agent, type ToolResultContent } from '@strands-agents/sdk'
 import { OpenAIModel } from '@strands-agents/sdk/models/openai'
-import { z } from 'zod'
-
-const helloTool = tool({
-  name: 'hello',
-  description: 'Return a simple greeting for a person by name.',
-  inputSchema: z.object({
-    name: z.string().min(1).describe('The name to greet'),
-  }),
-  callback: ({ name }) => {
-    return `Hello, ${name}! This response came from the hello tool.`
-  },
-})
+import { createOpenRouterUsageFetch, logUsage } from './telemetry/openrouter-usage.js'
+import { createInterface } from 'readline'
+import { helloTool, byebyeTool } from './tools/index.js'
 
 const model = new OpenAIModel({
   api: 'chat',
@@ -21,50 +12,91 @@ const model = new OpenAIModel({
   clientConfig: process.env.OPENAI_BASE_URL
     ? {
         baseURL: process.env.OPENAI_BASE_URL,
+        fetch: createOpenRouterUsageFetch(),
       }
     : undefined,
-  temperature: 0,
-  maxTokens: 300,
+  temperature: 0.7,
+  maxTokens: 500,
 })
 
 const agent = new Agent({
   model,
-  tools: [helloTool],
+  systemPrompt: 'You are a friendly chat assistant. You have two tools:\n' +
+    '- hello: use only when the user says hello or introduces themselves for the first time\n' +
+    '- byebye: use only when the user explicitly says goodbye or wants to end the chat\n' +
+    'For normal conversation, just reply naturally without calling any tool.',
+  tools: [helloTool, byebyeTool],
   printer: false,
 })
 
-function textFromToolResultContent(content: ToolResultContent[]): string {
-  return content
-    .map((block) => {
-      if (block.type === 'textBlock') {
-        return block.text
-      }
-
-      if (block.type === 'jsonBlock') {
-        return JSON.stringify(block.json)
-      }
-
-      return ''
-    })
-    .filter(Boolean)
-    .join('\n')
-}
-
-function latestToolResultText(): string | undefined {
+function latestText(): string | undefined {
   for (const message of [...agent.messages].reverse()) {
     for (const block of [...message.content].reverse()) {
+      if (block.type === 'textBlock') return block.text
       if (block.type === 'toolResultBlock') {
-        return textFromToolResultContent(block.content)
+        const text = block.content
+          .map((c) => (c.type === 'textBlock' ? c.text : c.type === 'jsonBlock' ? JSON.stringify(c.json) : ''))
+          .filter(Boolean)
+          .join('\n')
+        if (text) return text
       }
     }
   }
-
   return undefined
 }
 
-const name = process.argv[2] ?? 'Abidh'
-const result = await agent.invoke(
-  `Use the hello tool with name "${name}" and reply with only the tool result.`
-)
+function wasByebyeCalled(): boolean {
+  for (const message of agent.messages) {
+    for (const block of message.content) {
+      if (block.type === 'toolUseBlock' && block.name === 'byebye') return true
+    }
+  }
+  return false
+}
 
-console.log(latestToolResultText() ?? result.toString())
+// ── REPL loop ──────────────────────────────────────────────────────────────
+
+const rl = createInterface({ input: process.stdin, output: process.stdout })
+
+console.log('🤖 Agent ready! Type your messages (type "bye" or "exit" to quit).\n')
+
+async function ask(): Promise<boolean> {
+  return new Promise((resolve) => {
+    rl.question('You: ', async (input) => {
+      const trimmed = input.trim()
+      if (!trimmed) {
+        resolve(false)
+        return
+      }
+
+      try {
+        const result = await agent.invoke(trimmed)
+
+        const text = latestText() ?? result.toString()
+        if (text) {
+          process.stdout.write(`Agent: ${text}\n\n`)
+        }
+
+        if (wasByebyeCalled()) {
+          logUsage(result)
+          resolve(true)
+          return
+        }
+      } catch (err: any) {
+        process.stdout.write(`Agent: (error: ${err.message})\n\n`)
+      }
+
+      resolve(false)
+    })
+  })
+}
+
+;(async () => {
+  while (true) {
+    const shouldExit = await ask()
+    if (shouldExit) {
+      rl.close()
+      break
+    }
+  }
+})()
