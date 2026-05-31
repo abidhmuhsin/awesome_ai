@@ -8,6 +8,7 @@ Minimal Strands Agents TypeScript example using the OpenAI API with custom tools
 - MCP (Model Context Protocol) integration with stdio, HTTP, and SSE transports
 - OpenAI-compatible model support
 - Zod schema validation for tool parameters
+- Web UI with real-time WebSocket chat
 
 ## Setup
 
@@ -22,7 +23,12 @@ Optionally set `OPENAI_BASE_URL` for an OpenAI-compatible endpoint.
 ## Run
 
 ```bash
+# CLI mode (default)
 OPENAI_API_KEY=sk-your-key npm start -- Abidh
+
+# Web UI mode
+npm run ui                # opens at http://localhost:3000
+npm run ui -- --port 4000 # custom port
 ```
 
 Expected output is the agent response based on the tool result:
@@ -35,18 +41,41 @@ Hello, Abidh! This response came from the hello tool.
 
 ```
 src/
-├── agent.ts              # Main agent entry point
+├── agent.ts              # CLI agent entry point
+├── ui-server.ts          # Web UI server (Express + WebSocket)
 ├── mcp/
 │   ├── index.ts          # MCP client exports
 │   ├── mcp-clients.ts    # MCP client configurations (stdio, HTTP)
 │   ├── mcp-server.ts     # MCP server with tool registration
 │   └── tools/
 │       └── hello.ts      # MCP hello tool
-└── tools/
-    ├── index.ts          # Local tool exports
-    ├── hello.ts          # Local hello tool
-    └── byebye.ts         # Local byebye tool
+├── tools/
+│   ├── index.ts          # Local tool exports
+│   ├── hello.ts          # Local hello tool
+│   └── byebye.ts         # Local byebye tool
+└── telemetry/
+    └── openrouter-usage.ts
+
+ui/
+└── index.html            # Chat web interface
 ```
+
+## Web UI
+
+The project includes a web-based chat interface served via Express with WebSocket transport.
+
+```bash
+npm run ui                # Start on http://localhost:3000
+npm run ui -- --port 4000 # Custom port
+```
+
+Each browser connection gets its own agent instance. The UI features:
+- Dark theme with responsive layout
+- Real-time WebSocket communication
+- Auto-reconnect on disconnect
+- Typing indicator while agent processes
+
+The UI files are in `ui/` — a single `index.html` with no build step required.
 
 ## Local Tools
 
