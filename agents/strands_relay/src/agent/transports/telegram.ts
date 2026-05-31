@@ -7,26 +7,14 @@ import { Bot, GrammyError, HttpError } from 'grammy'
 import { logUsage } from '../../telemetry/openrouter-usage.js'
 import { createAgent } from '../factory.js'
 import { extractText, wasByebyeCalled } from '../helpers.js'
-
-// ── Helpers ────────────────────────────────────────────────────────
-
-const fmt = {
-  strip: (s: string) => s.replace(/\n+/g, ' ↵ ').replace(/\s+/g, ' ').trim(),
-  preview: (s: string, max = 60) => {
-    const one = fmt.strip(s)
-    return one.length > max ? one.slice(0, max) + '…' : one
-  },
-  chat: (id: number | string) => String(id),
-  ts: () => new Date().toLocaleTimeString('en-GB', { hour12: false }),
-  elapsed: (ms: number) => ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`,
-}
+import { telegramLogger as log, elapsed, truncate } from '../../logger.js'
 
 /** Per-chat agent instances so each conversation is isolated */
 const sessions = new Map<number, ReturnType<typeof createAgent>>()
 
 export async function startTelegram() {
   const ts = () => new Date().toLocaleTimeString('en-GB', { hour12: false })
-  console.log(`  ${ts()}  ▸ init`)
+  log.init('Bot token validated')
 
   const token = process.env.TELEGRAM_BOT_TOKEN
   if (!token) {
@@ -43,16 +31,20 @@ export async function startTelegram() {
     )
   }
 
-  console.log(`  ${ts()}  ▸ bot created`)
+  log.success('Bot instance created')
 
   const bot = new Bot(token)
 
   // ── Debug: log every incoming update ─────────────────────────────
 
+  // ── Debug: log every incoming update ─────────────────────────────
+
   bot.use(async (ctx, next) => {
     const msg = ctx.message
-    const text = msg && 'text' in msg ? fmt.preview(msg.text) : ''
-    console.log(`  ${fmt.ts()}  «  🗣 ${fmt.chat(ctx.chat.id)}  ◀  ${text}`)
+    const text = msg && 'text' in msg ? (msg.text ?? '') : ''
+    if (ctx.chat) {
+      log.incoming(ctx.chat.id, text)
+    }
     await next()
   })
 
@@ -118,7 +110,7 @@ export async function startTelegram() {
       const t0 = Date.now()
       const result = await agent.invoke(text)
       const reply = extractText(agent) ?? '(no response)'
-      const elapsed = ((Date.now() - t0) / 1000).toFixed(1)
+      const responseTime = Date.now() - t0
 
       // Send reply (split if longer than Telegram's 4096-char limit)
       const MAX_LENGTH = 4000
@@ -130,9 +122,9 @@ export async function startTelegram() {
             await ctx.reply(reply.slice(i, i + MAX_LENGTH))
           }
         }
-        console.log(`  ${fmt.ts()}  »  @${fmt.chat(chatId)}  ${fmt.elapsed(Date.now() - t0)}  ▶  ${fmt.preview(reply)}`)
+        log.outgoing(chatId, reply, responseTime)
       } catch (sendErr: any) {
-        console.error(`  ${fmt.ts()}  ✖  🗣 ${fmt.chat(chatId)}  ${sendErr.message}`)
+        log.error(`Send failed: ${sendErr.message}`, `chat=${chatId}`)
         throw sendErr
       }
 
@@ -143,7 +135,7 @@ export async function startTelegram() {
         sessions.delete(chatId)
       }
     } catch (err: any) {
-      console.error(`  ${fmt.ts()}  ✖  🗣 ${fmt.chat(chatId)}  ${err.message}`)
+      log.error(err.message, `chat=${chatId}`)
       ctx.reply(`❌ Error: ${err.message}`).catch(() => {})
     }
   })
@@ -153,11 +145,11 @@ export async function startTelegram() {
   bot.catch((err) => {
     const chatId = err.ctx.chat?.id ?? '?'
     if (err instanceof GrammyError) {
-      console.error(`  ${fmt.ts()}  ✖  🗣 ${fmt.chat(chatId)}  grammy: ${err.description}`)
+      log.error(`Grammy error: ${err.description}`, `chat=${chatId}`)
     } else if (err instanceof HttpError) {
-      console.error(`  ${fmt.ts()}  ✖  🗣 ${fmt.chat(chatId)}  http: ${err}`)
+      log.error(`HTTP error: ${err}`, `chat=${chatId}`)
     } else {
-      console.error(`  ${fmt.ts()}  ✖  🗣 ${fmt.chat(chatId)}  unknown:`, err)
+      log.error(`Unknown error: ${err}`, `chat=${chatId}`)
     }
   })
 
@@ -166,9 +158,9 @@ export async function startTelegram() {
   process.once('SIGINT', () => bot.stop())
   process.once('SIGTERM', () => bot.stop())
 
-  console.log(`  ${ts()}  ▸ polling`)
+  log.polling()
   await bot.start({
     drop_pending_updates: true,
-    onStart: (info) => console.log(`  ${ts()}  ✓ @${info.username} ready`),
+    onStart: (info) => log.ready(`@${info.username}`),
   })
 }

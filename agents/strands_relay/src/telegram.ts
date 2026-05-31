@@ -6,8 +6,9 @@
  */
 import 'dotenv/config'
 import { startTelegram } from './agent/transports/telegram.js'
+import { telegramLogger as log } from './logger.js'
 
 startTelegram().catch((err) => {
-  console.error('[telegram] Fatal:', err.message)
+  log.error(err.message, 'Fatal')
   process.exit(1)
 })

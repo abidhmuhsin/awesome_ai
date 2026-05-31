@@ -5,12 +5,13 @@ import { createInterface } from 'readline'
 import { logUsage } from '../../telemetry/openrouter-usage.js'
 import { createAgent } from '../factory.js'
 import { extractText, wasByebyeCalled } from '../helpers.js'
+import { cliLogger as log } from '../../logger.js'
 
 export async function startCli() {
   const agent = createAgent()
   const rl = createInterface({ input: process.stdin, output: process.stdout })
 
-  console.log('🤖 Agent ready! Type your messages (type "bye" or "exit" to quit).\n')
+  log.ready('Type your messages (type "bye" or "exit" to quit)')
 
   async function ask(): Promise<boolean> {
     return new Promise((resolve) => {
@@ -22,19 +23,23 @@ export async function startCli() {
         }
 
         try {
+          const t0 = Date.now()
           const result = await agent.invoke(trimmed)
           const text = extractText(agent) ?? result.toString()
+          const responseTime = Date.now() - t0
+
           if (text) {
-            process.stdout.write(`Agent: ${text}\n\n`)
+            log.outgoing('cli', text, responseTime)
           }
 
           if (wasByebyeCalled(agent)) {
             logUsage(result)
+            log.sessionEnd('cli')
             resolve(true)
             return
           }
         } catch (err: any) {
-          process.stdout.write(`Agent: (error: ${err.message})\n\n`)
+          log.error(err.message, 'cli')
         }
 
         resolve(false)

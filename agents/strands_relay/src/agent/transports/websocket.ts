@@ -11,6 +11,7 @@ import { createAgent } from '../factory.js'
 import { extractText, wasByebyeCalled } from '../helpers.js'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { wsLogger as log } from '../../logger.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -27,13 +28,17 @@ export async function startWebSocket(port = 3000) {
     res.json({ status: 'ok', model: process.env.OPENAI_MODEL ?? 'gpt-4o-mini' })
   })
 
+  log.init('Express server configured')
+
   // ── WebSocket ────────────────────────────────────────────────────
 
   const wss = new WebSocketServer({ server, path: '/ws' })
+  let connId = 0
 
   wss.on('connection', (ws: WebSocket) => {
+    const id = ++connId
     const agent = createAgent()
-    console.log(`[ws] client connected  (total: ${wss.clients.size})`)
+    log.connection('connected', `client #${id} | Total clients: ${wss.clients.size}`)
 
     ws.send(JSON.stringify({ type: 'system', text: 'Connected to agent. Say hello!' }))
 
@@ -41,13 +46,17 @@ export async function startWebSocket(port = 3000) {
       const text = raw.toString('utf-8').trim()
       if (!text) return
 
+      log.incoming(`ws#${id}`, text)
       ws.send(JSON.stringify({ type: 'user', text }))
 
       try {
+        const t0 = Date.now()
         const result = await agent.invoke(text)
         const reply = extractText(agent) ?? '(no response)'
+        const responseTime = Date.now() - t0
 
         ws.send(JSON.stringify({ type: 'agent', text: reply }))
+        log.outgoing(`ws#${id}`, reply, responseTime)
 
         if (wasByebyeCalled(agent)) {
           logUsage(result)
@@ -55,20 +64,21 @@ export async function startWebSocket(port = 3000) {
           ws.close()
         }
       } catch (err: any) {
-        console.error('[ws] error:', err.message)
-        ws.send(JSON.stringify({ type: 'error', text: err.message }))
+        // Log the full error message for debugging
+        log.error(err.message ?? String(err), `ws#${id}`)
+        ws.send(JSON.stringify({ type: 'error', text: err.message ?? 'Unknown error' }))
       }
     })
 
     ws.on('close', () => {
-      console.log(`[ws] client disconnected (total: ${wss.clients.size})`)
+      log.connection('disconnected', `client #${id} | Total clients: ${wss.clients.size}`)
     })
   })
 
   // ── Start ────────────────────────────────────────────────────────
 
   server.listen(port, () => {
-    console.log(`\n🌐  Visual Agent UI server running at http://localhost:${port}`)
-    console.log(`    WebSocket endpoint: ws://localhost:${port}/ws\n`)
+    log.serverStart(`http://localhost:${port}`)
+    log.info(`WebSocket endpoint: ws://localhost:${port}/ws`)
   })
 }

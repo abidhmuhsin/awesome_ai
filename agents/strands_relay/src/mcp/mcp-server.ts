@@ -13,6 +13,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js'
 import { registerHelloTool } from './tools/hello.js'
 import express from 'express'
+import { mcpLogger as log } from '../logger.js'
 
 // ── Create a new server with tools registered ──────────────────────────────
 
@@ -31,7 +32,7 @@ async function startStdio() {
   const server = createServer()
   const transport = new StdioServerTransport()
   await server.connect(transport)
-  console.error('MCP Server running on stdio')
+  log.ready('stdio transport')
 }
 
 async function startHttp(port: number) {
@@ -48,17 +49,20 @@ async function startHttp(port: number) {
       })
       await server.connect(transport)
       if (req.body?.method === 'tools/call') {
-        console.error(`tool:[${req.body.params.name}] args:(${JSON.stringify(req.body.params.arguments)})`)
+        const t0 = Date.now()
+        await transport.handleRequest(req, res, req.body)
+        log.tool(req.body.params.name, JSON.stringify(req.body.params.arguments), Date.now() - t0)
+      } else {
+        await transport.handleRequest(req, res, req.body)
       }
-      await transport.handleRequest(req, res, req.body)
-    } catch (error) {
-      console.error(`[HTTP] error:`, error.message ?? error)
+    } catch (error: any) {
+      log.error(error.message ?? error, 'HTTP')
       res.status(500).json({ error: 'Internal server error' })
     }
   })
 
   app.listen(port, () => {
-    console.error(`MCP Server running on http://localhost:${port}/mcp`)
+    log.serverStart(`http://localhost:${port}/mcp [HTTP]`)
   })
 }
 
@@ -75,18 +79,19 @@ async function startSse(port: number) {
       const transport = new SSEServerTransport('/messages', res)
       transports.set(transport.sessionId, transport)
 
-      // connect() calls transport.start() which writes headers and the endpoint event
-      await server.connect(transport)
+      log.connection('connected', `SSE session ${transport.sessionId}`)
 
       // Clean up when connection closes
       res.on('close', () => {
         transports.delete(transport.sessionId)
-        console.error(`SSE session ${transport.sessionId} disconnected`)
+        log.connection('disconnected', `SSE session ${transport.sessionId}`)
       })
 
-      console.error(`SSE session ${transport.sessionId} connected`)
+      // connect() calls transport.start() which writes headers and the endpoint event
+      // This is long-running for SSE — blocks until connection closes
+      await server.connect(transport)
     } catch (error) {
-      console.error('Error handling SSE connection:', error)
+      log.error('SSE', `Connection error: ${error}`)
       if (!res.headersSent) {
         res.writeHead(500)
       }
@@ -106,12 +111,14 @@ async function startSse(port: number) {
       }
 
       if (req.body?.method === 'tools/call') {
-        console.error(`tool:[${req.body.params.name}] args:(${JSON.stringify(req.body.params.arguments)})`)
+        const t0 = Date.now()
+        await transport.handlePostMessage(req, res, req.body)
+        log.tool(req.body.params.name, JSON.stringify(req.body.params.arguments), Date.now() - t0)
+      } else {
+        await transport.handlePostMessage(req, res, req.body)
       }
-
-      await transport.handlePostMessage(req, res, req.body)
-    } catch (error) {
-      console.error(`[SSE] error:`, error.message ?? error)
+    } catch (error: any) {
+      log.error(error.message ?? error, 'SSE')
       if (!res.headersSent) {
         res.writeHead(500).json({ error: 'Internal server error' })
       }
@@ -119,7 +126,7 @@ async function startSse(port: number) {
   })
 
   app.listen(port, () => {
-    console.error(`MCP SSE Server running on http://localhost:${port}/sse`)
+    log.serverStart(`http://localhost:${port}/sse [SSE]`)
   })
 }
 

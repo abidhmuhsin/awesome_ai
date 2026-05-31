@@ -1,6 +1,7 @@
 import type { AgentResult } from '@strands-agents/sdk'
 import { appendFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
+import { agentLogger as log } from '../logger.js'
 
 export interface OpenRouterUsage {
   completion_tokens?: number
@@ -151,12 +152,13 @@ function extractUserAndLabel(init: RequestInit | undefined): { userText: string;
 
     // Find the last assistant message to see if it had tool_calls
     const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant')
-    const hasToolCalls = (lastAssistant?.tool_calls?.length ?? 0) > 0
+    const toolCalls = (lastAssistant?.tool_calls ?? []) as Array<{ function?: { name?: string } }>
+    const hasToolCalls = toolCalls.length > 0
 
     let label: string
     if (hasToolResults && hasToolCalls) {
       // Follow-up call — model responds after receiving tool results
-      const toolName = lastAssistant?.tool_calls?.[0]?.function?.name ?? '?'
+      const toolName = toolCalls[0]?.function?.name ?? '?'
       label = `tool-result:${toolName}`
     } else if (body.tools?.length > 0) {
       // First call — model is deciding which tool to use
@@ -442,6 +444,7 @@ export function formatUsage(result: AgentResult): string {
 }
 
 export function logUsage(result: AgentResult): void {
-  console.log(formatUsage(result))
-  console.log(`Per-call usage logged to: ${LOG_FILE}`)
+  const usageStr = formatUsage(result)
+  log.info(usageStr)
+  log.info(`Per-call usage logged to: ${LOG_FILE}`)
 }
