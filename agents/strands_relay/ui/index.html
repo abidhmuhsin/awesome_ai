@@ -326,6 +326,46 @@
       background-size: 80px 80px;
     }
 
+    /* ── Widget card ───────────────────────────────────────────────── */
+    .widget-card {
+      align-self: flex-start;
+      max-width: 720px;
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: visible;
+      animation: messageIn 0.5s ease-out forwards;
+      opacity: 0;
+    }
+
+    .widget-title {
+      padding: 8px 14px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .widget-body {
+      padding: 16px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .widget-body > * {
+      max-width: 100%;
+    }
+
+    .widget-body svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
     /* ── Diagonal crop decoration ─────────────────────────────────── */
     .diagonal-top {
       position: fixed;
@@ -406,7 +446,12 @@
         }
         
         removeTyping()
-        appendMessage(msg.type, msg.text)
+
+        if (msg.type === 'widget') {
+          appendWidget(msg.title, msg.widget_code)
+        } else {
+          appendMessage(msg.type, msg.text)
+        }
       })
     }
 
@@ -414,6 +459,7 @@
 
     // ── Messages ──────────────────────────────────────────────────
     function appendMessage(type, text) {
+      if (!text || !text.trim()) return
       const el = document.createElement('div')
       el.classList.add('msg', type)
       el.textContent = text
@@ -434,6 +480,25 @@
     function removeTyping() {
       const el = document.getElementById('typing')
       if (el) el.remove()
+    }
+
+    function appendWidget(title, code) {
+      const card = document.createElement('div')
+      card.classList.add('widget-card')
+
+      const titleEl = document.createElement('div')
+      titleEl.classList.add('widget-title')
+      titleEl.textContent = title
+      card.appendChild(titleEl)
+
+      const body = document.createElement('div')
+      body.classList.add('widget-body')
+      // TODO: XSS — innerHTML with untrusted LLM output. Use sandboxed iframe later.
+      body.innerHTML = code
+      card.appendChild(body)
+
+      chatEl.appendChild(card)
+      chatEl.scrollTop = chatEl.scrollHeight
     }
 
     // ── Input handling ────────────────────────────────────────────

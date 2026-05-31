@@ -8,7 +8,7 @@ import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { logUsage } from '../../telemetry/openrouter-usage.js'
 import { createAgent } from '../factory.js'
-import { extractText, wasByebyeCalled } from '../helpers.js'
+import { extractText, createWidgetCache, wasByebyeCalled } from '../helpers.js'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { wsLogger as log } from '../../logger.js'
@@ -38,6 +38,7 @@ export async function startWebSocket(port = 3000) {
   wss.on('connection', (ws: WebSocket) => {
     const id = ++connId
     const agent = createAgent()
+    const widgetCache = createWidgetCache()
     log.connection('connected', `client #${id} | Total clients: ${wss.clients.size}`)
 
     ws.send(JSON.stringify({ type: 'system', text: 'Connected to agent. Say hello!' }))
@@ -58,6 +59,13 @@ export async function startWebSocket(port = 3000) {
         const responseTime = Date.now() - t0
 
         ws.send(JSON.stringify({ type: 'agent', text: reply }))
+
+        // Check if the agent produced any new widgets
+        const widgets = widgetCache.extractWidgets(agent)
+        for (const widget of widgets) {
+          ws.send(JSON.stringify({ type: 'widget', title: widget.title, widget_code: widget.widget_code }))
+        }
+
         log.outgoing(`ws#${id}`, reply, responseTime)
 
         if (wasByebyeCalled(agent)) {
