@@ -6,12 +6,16 @@
   "scripts": {
     "start": "tsx src/agent.ts",
     "mcp-server": "tsx src/mcp/mcp-server.ts",
+    "mcp-server:http": "tsx src/mcp/mcp-server.ts --http",
+    "mcp-server:sse": "tsx src/mcp/mcp-server.ts --sse",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
     "@strands-agents/sdk": "latest",
+    "@types/express": "^5.0.6",
     "dotenv": "latest",
+    "express": "^5.2.1",
     "openai": "latest",
     "zod": "latest"
   },
