@@ -41,23 +41,29 @@ Hello, Abidh! This response came from the hello tool.
 
 ```
 src/
-├── agent.ts              # CLI agent entry point
-├── ui-server.ts          # Web UI server (Express + WebSocket)
+├── cli.ts                        # CLI entry point → npm start
+├── ui-server.ts                  # UI entry point → npm run ui
+├── agent/
+│   ├── factory.ts                # createAgent() — shared config
+│   ├── helpers.ts                # extractText(), wasByebyeCalled()
+│   └── transports/
+│       ├── cli.ts                # readline REPL transport
+│       └── websocket.ts          # Express + WebSocket transport
 ├── mcp/
-│   ├── index.ts          # MCP client exports
-│   ├── mcp-clients.ts    # MCP client configurations (stdio, HTTP)
-│   ├── mcp-server.ts     # MCP server with tool registration
+│   ├── index.ts                  # MCP client exports
+│   ├── mcp-clients.ts            # MCP client configurations (stdio, HTTP)
+│   ├── mcp-server.ts             # MCP server with tool registration
 │   └── tools/
-│       └── hello.ts      # MCP hello tool
+│       └── hello.ts              # MCP hello tool
 ├── tools/
-│   ├── index.ts          # Local tool exports
-│   ├── hello.ts          # Local hello tool
-│   └── byebye.ts         # Local byebye tool
+│   ├── index.ts                  # Local tool exports
+│   ├── hello.ts                  # Local hello tool
+│   └── byebye.ts                 # Local byebye tool
 └── telemetry/
     └── openrouter-usage.ts
 
 ui/
-└── index.html            # Chat web interface
+└── index.html                    # Chat web interface
 ```
 
 ## Web UI

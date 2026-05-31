@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "tsx src/agent.ts",
+    "start": "tsx src/cli.ts",
     "ui": "tsx src/ui-server.ts",
     "mcp-server": "tsx src/mcp/mcp-server.ts",
     "mcp-server:http": "tsx src/mcp/mcp-server.ts --http",
