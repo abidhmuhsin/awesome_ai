@@ -8,7 +8,8 @@ import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { logUsage } from '../../telemetry/openrouter-usage.js'
 import { createAgent } from '../factory.js'
-import { extractText, extractToolCalls, createWidgetCache, wasByebyeCalled } from '../helpers.js'
+import { BeforeToolCallEvent, AfterToolCallEvent } from '@strands-agents/sdk'
+import { extractText, createWidgetCache, wasByebyeCalled } from '../helpers.js'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { wsLogger as log } from '../../logger.js'
@@ -43,6 +44,51 @@ export async function startWebSocket(port = 3000) {
 
     ws.send(JSON.stringify({ type: 'system', text: 'Connected to agent. Say hello!' }))
 
+    // ── Register hook-based tool call streaming (once per connection) ──
+    // These fire in real time during agent.invoke(), sending start/end
+    // events so the UI can show tool calls as they happen.
+    const toolStartMap = new Map<string, { startTime: number }>()
+
+    const unsubBeforeToolCall = agent.addHook(BeforeToolCallEvent, (event) => {
+      const args = typeof event.toolUse.input === 'object'
+        ? JSON.stringify(event.toolUse.input)
+        : String(event.toolUse.input ?? '')
+      const toolId = event.toolUse.toolUseId
+
+      toolStartMap.set(toolId, { startTime: Date.now() })
+      log.tool(event.toolUse.name, args, undefined, `ws#${id}`)
+
+      ws.send(JSON.stringify({
+        type: 'tool_start',
+        id: toolId,
+        name: event.toolUse.name,
+        args,
+      }))
+    })
+
+    const unsubAfterToolCall = agent.addHook(AfterToolCallEvent, (event) => {
+      const toolId = event.toolUse.toolUseId
+      const startData = toolStartMap.get(toolId)
+      const duration = startData ? Date.now() - startData.startTime : 0
+
+      // Extract result text from content blocks
+      let resultText = ''
+      for (const block of event.result.content ?? []) {
+        const b = block as any
+        if (b.type === 'textBlock') resultText += b.text ?? ''
+        else if (b.type === 'jsonBlock') resultText += JSON.stringify(b.json ?? '')
+      }
+
+      ws.send(JSON.stringify({
+        type: 'tool_end',
+        id: toolId,
+        name: event.toolUse.name,
+        duration,
+        status: event.error ? 'error' : 'success',
+        result: resultText,
+      }))
+    })
+
     ws.on('message', async (raw: Buffer) => {
       const text = raw.toString('utf-8').trim()
       if (!text) return
@@ -54,24 +100,12 @@ export async function startWebSocket(port = 3000) {
         // Send typing indicator
         ws.send(JSON.stringify({ type: 'typing', text: '' }))
         const t0 = Date.now()
+
+        // ── Invoke agent ───────────────────────────────────────────
         const result = await agent.invoke(text)
+
         const reply = extractText(agent) ?? '(no response)'
         const responseTime = Date.now() - t0
-
-        // Log and send any MCP/tool calls made during this invoke
-        const toolCalls = extractToolCalls(agent)
-        for (const tc of toolCalls) {
-          log.tool(tc.name, tc.args, undefined, `ws#${id}`)
-        }
-        if (toolCalls.length > 0) {
-          ws.send(JSON.stringify({
-            type: 'tool_calls',
-            tools: toolCalls.map(tc => ({
-              name: tc.name,
-              args: tc.args.length > 80 ? tc.args.slice(0, 80) + '…' : tc.args
-            }))
-          }))
-        }
 
         ws.send(JSON.stringify({ type: 'agent', text: reply }))
 
@@ -96,6 +130,8 @@ export async function startWebSocket(port = 3000) {
     })
 
     ws.on('close', () => {
+      unsubBeforeToolCall()
+      unsubAfterToolCall()
       log.connection('disconnected', `client #${id} | Total clients: ${wss.clients.size}`)
     })
   })

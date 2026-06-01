@@ -273,38 +273,159 @@
       stroke: #fff;
     }
 
-    /* ── Tool call lines ──────────────────────────────────────────── */
-    .toolcall-line {
-      font-size: 0.7rem;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      color: var(--text);
-      padding: 2px 18px;
-      margin: -6px 0 -2px 0;
-      user-select: none;
-      animation: toolcallIn 0.3s ease-out forwards;
+    /* ── Tool call cards (expandable) ────────────────────────────── */
+    .toolcall {
+      align-self: flex-start;
+      max-width: 720px;
+      width: 100%;
+      background: rgba(255,77,77,0.04);
+      border: 1px solid rgba(255,77,77,0.15);
+      border-radius: var(--radius);
+      overflow: visible;
+      animation: toolcallFade 0.25s ease-out forwards;
       opacity: 0;
     }
 
-    .toolcall-line .prefix {
-      color: var(--text-muted);
-      opacity: 0.6;
+    @keyframes toolcallFade {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
-    .toolcall-line .name {
+    .toolcall-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      cursor: pointer;
+      user-select: none;
+      transition: background var(--transition);
+    }
+
+    .toolcall-header:hover {
+      background: rgba(255,77,77,0.06);
+    }
+
+    .toolcall-icon {
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       color: var(--accent);
+      flex-shrink: 0;
     }
 
-    .toolcall-line .args {
-      color: rgba(255,255,255,0.55);
+    .toolcall-icon svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* Running spinner */
+    .toolcall-icon.spin {
+      animation: toolcallSpin 1s linear infinite;
+    }
+
+    @keyframes toolcallSpin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    /* Checkmark (success) fill */
+    .toolcall-icon.success svg {
+      stroke: #22c55e;
+    }
+
+    .toolcall-icon.error svg {
+      stroke: #ff4d4d;
+    }
+
+    .toolcall-name {
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--accent);
+      font-family: var(--font-body);
+      flex-shrink: 0;
+    }
+
+    .toolcall-duration {
+      font-size: 0.65rem;
+      color: var(--text-muted);
       font-weight: 400;
       font-family: monospace;
-      font-size: 0.65rem;
+      margin-left: auto;
     }
 
-    @keyframes toolcallIn {
-      from { opacity: 0; transform: translateY(-6px); }
-      to { opacity: 1; transform: translateY(0); }
+    .toolcall-chevron {
+      font-size: 0.6rem;
+      color: var(--text-muted);
+      transition: transform var(--transition);
+      margin-left: 4px;
+    }
+
+    .toolcall-chevron.open {
+      transform: rotate(90deg);
+    }
+
+    .toolcall-body {
+      display: none;
+      padding: 10px 14px 14px 14px;
+      border-top: 1px solid rgba(255,77,77,0.08);
+      font-family: monospace;
+      font-size: 0.72rem;
+      line-height: 1.6;
+      color: rgba(255,255,255,0.7);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      max-height: 40vh;
+      overflow-y: auto;
+    }
+
+    .toolcall-body.open {
+      display: block;
+    }
+
+    .toolcall-body::-webkit-scrollbar {
+      width: 3px;
+    }
+
+    .toolcall-body::-webkit-scrollbar-thumb {
+      background: rgba(255,77,77,0.3);
+      border-radius: 2px;
+    }
+
+    .toolcall-body .toolcall-label {
+      font-size: 0.6rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .toolcall-body .toolcall-args {
+      margin-bottom: 10px;
+      padding: 6px 8px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 3px;
+      font-size: 0.68rem;
+      line-height: 1.5;
+      color: rgba(255,255,255,0.6);
+    }
+
+    .toolcall-body .toolcall-result {
+      padding: 6px 8px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 3px;
+      font-size: 0.68rem;
+      line-height: 1.5;
+      color: rgba(255,255,255,0.5);
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .toolcall-body .toolcall-result.error {
+      color: #ff6b6b;
     }
 
     /* ── Input bar ────────────────────────────────────────────────── */
@@ -533,31 +654,35 @@
         ws.close()
       })
 
-      // Track tool calls that arrive before the agent response
-      let pendingTools = []
+      // Track active tool call elements by id
+      const toolEls = new Map()
 
       ws.addEventListener('message', (evt) => {
         const msg = JSON.parse(evt.data)
-        
-        if (msg.type === 'tool_calls') {
-          pendingTools = msg.tools || []
+
+        if (msg.type === 'tool_start') {
+          removeTyping()
+          toolEls.set(msg.id, appendToolCallStart(msg.id, msg.name, msg.args))
           return
         }
-        
+
+        if (msg.type === 'tool_end') {
+          const el = toolEls.get(msg.id)
+          if (el) appendToolCallEnd(el, msg)
+          toolEls.delete(msg.id)
+          return
+        }
+
         // Show typing indicator when agent starts processing
         if (msg.type === 'typing') {
           showTyping()
           return
         }
-        
+
         removeTyping()
 
         if (msg.type === 'widget') {
           appendWidget(msg.title, msg.widget_code)
-        } else if (msg.type === 'agent') {
-          appendToolCalls(pendingTools)
-          appendMessage(msg.type, msg.text)
-          pendingTools = []
         } else {
           appendMessage(msg.type, msg.text)
         }
@@ -567,13 +692,94 @@
     connect()
 
     // ── Messages ──────────────────────────────────────────────────
-    function appendToolCalls(tools) {
-      if (!tools || tools.length === 0) return
-      for (const t of tools) {
-        const el = document.createElement('div')
-        el.classList.add('toolcall-line')
-        el.innerHTML = `> <span class="prefix">toolcall:</span> <span class="name">${t.name}</span> <span class="args">(${t.args || ''})</span>`
-        chatEl.appendChild(el)
+    function appendToolCallStart(id, name, args) {
+      const card = document.createElement('div')
+      card.classList.add('toolcall')
+      card.dataset.toolId = id
+      card.style.animationDelay = '0s'
+
+      // Header (always visible)
+      const header = document.createElement('div')
+      header.classList.add('toolcall-header')
+
+      const icon = document.createElement('span')
+      icon.classList.add('toolcall-icon', 'spin')
+      icon.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>`
+      header.appendChild(icon)
+
+      const nameEl = document.createElement('span')
+      nameEl.classList.add('toolcall-name')
+      nameEl.textContent = name
+      header.appendChild(nameEl)
+
+      const durationEl = document.createElement('span')
+      durationEl.classList.add('toolcall-duration')
+      durationEl.textContent = 'running…'
+      header.appendChild(durationEl)
+
+      const chevron = document.createElement('span')
+      chevron.classList.add('toolcall-chevron')
+      chevron.textContent = '▸'
+      header.appendChild(chevron)
+
+      card.appendChild(header)
+
+      // Body (expandable — hidden by default)
+      const body = document.createElement('div')
+      body.classList.add('toolcall-body')
+
+      const label = document.createElement('div')
+      label.classList.add('toolcall-label')
+      label.textContent = 'Arguments'
+      body.appendChild(label)
+
+      const argsEl = document.createElement('div')
+      argsEl.classList.add('toolcall-args')
+      argsEl.textContent = args || '{}'
+      body.appendChild(argsEl)
+
+      card.appendChild(body)
+
+      // Toggle expand on header click
+      header.addEventListener('click', () => {
+        body.classList.toggle('open')
+        chevron.classList.toggle('open')
+      })
+
+      chatEl.appendChild(card)
+      chatEl.scrollTop = chatEl.scrollHeight
+      return card
+    }
+
+    function appendToolCallEnd(card, msg) {
+      const icon = card.querySelector('.toolcall-icon')
+      icon.classList.remove('spin')
+      icon.classList.add(msg.status === 'error' ? 'error' : 'success')
+      icon.innerHTML = msg.status === 'error'
+        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`
+        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="16 10 11 15 8 12"/></svg>`
+
+      const durationEl = card.querySelector('.toolcall-duration')
+      const dur = msg.duration
+      if (dur < 1000) durationEl.textContent = dur + 'ms'
+      else durationEl.textContent = (dur / 1000).toFixed(1) + 's'
+
+      // Add result section to body
+      const body = card.querySelector('.toolcall-body')
+      if (msg.result) {
+        const resultLabel = document.createElement('div')
+        resultLabel.classList.add('toolcall-label')
+        resultLabel.textContent = 'Result'
+        resultLabel.style.marginTop = '10px'
+        body.appendChild(resultLabel)
+
+        const resultEl = document.createElement('div')
+        resultEl.classList.add('toolcall-result')
+        if (msg.status === 'error') resultEl.classList.add('error')
+        resultEl.textContent = msg.result.length > 500
+          ? msg.result.slice(0, 500) + '…'
+          : msg.result
+        body.appendChild(resultEl)
       }
     }
 
