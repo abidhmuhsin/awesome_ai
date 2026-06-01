@@ -210,6 +210,103 @@
       border: 1px solid rgba(255,77,77,0.3);
     }
 
+    /* ── Copy button ──────────────────────────────────────────────── */
+    .msg {
+      position: relative;
+    }
+
+    .copy-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: var(--radius);
+      background: rgba(255,255,255,0.08);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity var(--transition);
+      z-index: 2;
+    }
+
+    .msg:hover .copy-btn {
+      opacity: 1;
+    }
+
+    .copy-btn:hover {
+      background: rgba(255,255,255,0.16);
+    }
+
+    .copy-btn svg {
+      width: 14px;
+      height: 14px;
+      stroke: var(--text-muted);
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .copy-btn:hover svg {
+      stroke: var(--text);
+    }
+
+    .copy-btn.copied svg {
+      stroke: #22c55e;
+    }
+
+    /* User copy button on darker bg needs lighter hover bg */
+    .msg.user .copy-btn {
+      background: rgba(0,0,0,0.15);
+    }
+    .msg.user .copy-btn:hover {
+      background: rgba(0,0,0,0.3);
+    }
+    .msg.user .copy-btn svg {
+      stroke: rgba(255,255,255,0.7);
+    }
+    .msg.user .copy-btn:hover svg {
+      stroke: #fff;
+    }
+
+    /* ── Tool call lines ──────────────────────────────────────────── */
+    .toolcall-line {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      color: var(--text);
+      padding: 2px 18px;
+      margin: -6px 0 -2px 0;
+      user-select: none;
+      animation: toolcallIn 0.3s ease-out forwards;
+      opacity: 0;
+    }
+
+    .toolcall-line .prefix {
+      color: var(--text-muted);
+      opacity: 0.6;
+    }
+
+    .toolcall-line .name {
+      color: var(--accent);
+    }
+
+    .toolcall-line .args {
+      color: rgba(255,255,255,0.55);
+      font-weight: 400;
+      font-family: monospace;
+      font-size: 0.65rem;
+    }
+
+    @keyframes toolcallIn {
+      from { opacity: 0; transform: translateY(-6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
     /* ── Input bar ────────────────────────────────────────────────── */
     #input-bar {
       padding: 20px 32px;
@@ -436,8 +533,16 @@
         ws.close()
       })
 
+      // Track tool calls that arrive before the agent response
+      let pendingTools = []
+
       ws.addEventListener('message', (evt) => {
         const msg = JSON.parse(evt.data)
+        
+        if (msg.type === 'tool_calls') {
+          pendingTools = msg.tools || []
+          return
+        }
         
         // Show typing indicator when agent starts processing
         if (msg.type === 'typing') {
@@ -449,6 +554,10 @@
 
         if (msg.type === 'widget') {
           appendWidget(msg.title, msg.widget_code)
+        } else if (msg.type === 'agent') {
+          appendToolCalls(pendingTools)
+          appendMessage(msg.type, msg.text)
+          pendingTools = []
         } else {
           appendMessage(msg.type, msg.text)
         }
@@ -458,11 +567,46 @@
     connect()
 
     // ── Messages ──────────────────────────────────────────────────
+    function appendToolCalls(tools) {
+      if (!tools || tools.length === 0) return
+      for (const t of tools) {
+        const el = document.createElement('div')
+        el.classList.add('toolcall-line')
+        el.innerHTML = `> <span class="prefix">toolcall:</span> <span class="name">${t.name}</span> <span class="args">(${t.args || ''})</span>`
+        chatEl.appendChild(el)
+      }
+    }
+
     function appendMessage(type, text) {
       if (!text || !text.trim()) return
+
       const el = document.createElement('div')
       el.classList.add('msg', type)
-      el.textContent = text
+
+      // Message text
+      const textEl = document.createElement('div')
+      textEl.textContent = text
+      el.appendChild(textEl)
+
+      // Copy button (inside the message bubble, top-right)
+      if (type === 'user' || type === 'agent') {
+        const btn = document.createElement('button')
+        btn.classList.add('copy-btn')
+        btn.title = 'Copy'
+        btn.innerHTML = `<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`
+        btn.addEventListener('click', () => {
+          navigator.clipboard.writeText(el.textContent).then(() => {
+            btn.classList.add('copied')
+            btn.innerHTML = `<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>`
+            setTimeout(() => {
+              btn.classList.remove('copied')
+              btn.innerHTML = `<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`
+            }, 1500)
+          })
+        })
+        el.appendChild(btn)
+      }
+
       chatEl.appendChild(el)
       chatEl.scrollTop = chatEl.scrollHeight
     }

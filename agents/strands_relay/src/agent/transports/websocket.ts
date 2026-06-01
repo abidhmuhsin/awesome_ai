@@ -8,7 +8,7 @@ import { createServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { logUsage } from '../../telemetry/openrouter-usage.js'
 import { createAgent } from '../factory.js'
-import { extractText, createWidgetCache, wasByebyeCalled } from '../helpers.js'
+import { extractText, extractToolCalls, createWidgetCache, wasByebyeCalled } from '../helpers.js'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { wsLogger as log } from '../../logger.js'
@@ -57,6 +57,21 @@ export async function startWebSocket(port = 3000) {
         const result = await agent.invoke(text)
         const reply = extractText(agent) ?? '(no response)'
         const responseTime = Date.now() - t0
+
+        // Log and send any MCP/tool calls made during this invoke
+        const toolCalls = extractToolCalls(agent)
+        for (const tc of toolCalls) {
+          log.tool(tc.name, tc.args, undefined, `ws#${id}`)
+        }
+        if (toolCalls.length > 0) {
+          ws.send(JSON.stringify({
+            type: 'tool_calls',
+            tools: toolCalls.map(tc => ({
+              name: tc.name,
+              args: tc.args.length > 80 ? tc.args.slice(0, 80) + '…' : tc.args
+            }))
+          }))
+        }
 
         ws.send(JSON.stringify({ type: 'agent', text: reply }))
 

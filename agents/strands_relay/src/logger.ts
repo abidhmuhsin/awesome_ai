@@ -140,11 +140,12 @@ export function error(chat: number | string, message: string): string {
 /**
  * Format tool usage log
  * 
- * Example:  12:34:59  hello({ name: "World" })
+ * Example:  12:34:59  ⚙ ws#3  TOOL  hello  ({name: "World"})
  */
-export function toolUse(toolName: string, args: string, duration?: number): string {
+export function toolUse(toolName: string, args: string, duration?: number, chat?: number | string): string {
   const durationStr = duration !== undefined ? `  ${color(`(${elapsed(duration)})`, COLORS.dim)}` : ''
-  return `${color(timestamp(), COLORS.dim)}  ${color(ICONS.TOOL, COLORS.yellow)}  ${color('TOOL', COLORS.yellow)}  ${color(toolName, COLORS.yellow)}  ${color(`(${truncate(args, 30)})`, COLORS.dim)}${durationStr}`
+  const chatStr = chat !== undefined ? `  ${color(chatId(chat), COLORS.cyan)}` : ''
+  return `${color(timestamp(), COLORS.dim)}  ${color(ICONS.TOOL, COLORS.yellow)}${chatStr}  ${color('TOOL', COLORS.yellow)}  ${color(toolName, COLORS.yellow)}  ${color(`(${truncate(args, 30)})`, COLORS.dim)}${durationStr}`
 }
 
 /**
@@ -258,8 +259,8 @@ export class Logger {
     console.log(outgoingMessage(chat, text, duration))
   }
 
-  tool(name: string, args: string, duration?: number): void {
-    console.log(toolUse(name, args, duration))
+  tool(name: string, args: string, duration?: number, chat?: number | string): void {
+    console.log(toolUse(name, args, duration, chat))
   }
 
   sessionStart(chat: number | string): void {
