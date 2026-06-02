@@ -544,7 +544,7 @@
       background-size: 80px 80px;
     }
 
-    /* ── Widget card ───────────────────────────────────────────────── */
+    /* ── Widget card (iframe container) ────────────────────────────── */
     .widget-card {
       align-self: flex-start;
       max-width: 720px;
@@ -567,21 +567,21 @@
       border-bottom: 1px solid var(--border);
     }
 
-    .widget-body {
-      padding: 16px;
-      display: flex;
-      justify-content: center;
-      align-items: center;
+    .widget-placeholder {
+      height: 0px;
+      transition: height 0.3s ease-out;
     }
 
-    .widget-body > * {
-      max-width: 100%;
+    .widget-placeholder.loaded {
+      display: none;
     }
 
-    .widget-body svg {
+    .widget-iframe {
       display: block;
       width: 100%;
-      height: auto;
+      border: none;
+      background: transparent;
+      height: 0px;
     }
 
     /* ── Diagonal crop decoration ─────────────────────────────────── */
@@ -832,7 +832,114 @@
       if (el) el.remove()
     }
 
-    function appendWidget(title, code) {
+    // ── Widget Manager ──────────────────────────────────────────────
+    const widgets = new Map()
+    let widgetCounter = 0
+
+    function buildIframePage(widgetCode) {
+      return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --bg: #0f0f0f;
+      --surface: #1a1a1a;
+      --text: #ffffff;
+      --text-muted: #666666;
+      --accent: #ff4d4d;
+      --accent-hover: #ff2020;
+      --border: rgba(255,255,255,0.08);
+      --radius: 4px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      min-height: 0;
+      font-family: 'Barlow', sans-serif;
+      background: transparent;
+      color: var(--text);
+      line-height: 1.65;
+    }
+    body { padding: 16px; }
+    /* Ensure SVGs render properly and fill width */
+    svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      max-width: 100%;
+      overflow: visible;
+    }
+    /* Ensure all SVG child elements use the CSS custom properties */
+    svg text, svg rect, svg circle, svg path, svg line, svg polyline, svg g {
+      color: var(--text);
+    }
+  </style>
+  <script>
+    // Apply CSS variables to SVG elements that use var() in attributes
+    function applySvgCssVars() {
+      const style = getComputedStyle(document.documentElement)
+      const vars = ['--text', '--accent', '--text-muted', '--bg', '--surface', '--border']
+      
+      document.querySelectorAll('svg [fill], svg [stroke]').forEach(el => {
+        vars.forEach(v => {
+          const val = style.getPropertyValue(v).trim()
+          if (el.getAttribute('fill') === 'var(' + v + ')') {
+            el.setAttribute('fill', val)
+          }
+          if (el.getAttribute('stroke') === 'var(' + v + ')') {
+            el.setAttribute('stroke', val)
+          }
+        })
+      })
+    }
+
+    window.sendPrompt = function(text) {
+      window.parent.postMessage({ type: 'WIDGET_SEND_PROMPT', text }, '*')
+    }
+    window.openLink = function(url) {
+      window.parent.postMessage({ type: 'WIDGET_OPEN_LINK', url }, '*')
+    }
+    let lastHeight = 0
+    function reportHeight() {
+      // Use offsetHeight for accurate content height (excludes overflow)
+      const h = document.body.offsetHeight || document.documentElement.offsetHeight
+      if (h > 0 && h !== lastHeight) {
+        lastHeight = h
+        window.parent.postMessage({ type: 'WIDGET_RESIZE', height: h }, '*')
+      }
+    }
+    // Apply CSS vars and report height on load
+    window.addEventListener('load', function() {
+      applySvgCssVars()
+      // Small delay to let SVG render
+      setTimeout(reportHeight, 50)
+    })
+    document.addEventListener('DOMContentLoaded', function() {
+      applySvgCssVars()
+      reportHeight()
+    })
+    // Watch for DOM changes (new content, animations)
+    new MutationObserver(function() {
+      clearTimeout(window._rht)
+      window._rht = setTimeout(reportHeight, 150)
+    }).observe(document.body, {
+      subtree: true, childList: true
+    })
+  <\/script>
+</head>
+<body>
+  ${widgetCode}
+</body>
+</html>`
+    }
+
+    function appendWidget(title, widgetCode) {
+      const id = 'w_' + (++widgetCounter)
+
       const card = document.createElement('div')
       card.classList.add('widget-card')
 
@@ -841,15 +948,63 @@
       titleEl.textContent = title
       card.appendChild(titleEl)
 
-      const body = document.createElement('div')
-      body.classList.add('widget-body')
-      // TODO: XSS — innerHTML with untrusted LLM output. Use sandboxed iframe later.
-      body.innerHTML = code
-      card.appendChild(body)
+      const placeholder = document.createElement('div')
+      placeholder.classList.add('widget-placeholder')
+      card.appendChild(placeholder)
+
+      const iframe = document.createElement('iframe')
+      iframe.title = 'widget: ' + title
+      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
+      iframe.allow = 'fullscreen *; clipboard-write *'
+      iframe.classList.add('widget-iframe')
+      iframe.srcdoc = buildIframePage(widgetCode)
+      card.appendChild(iframe)
+
+      widgets.set(id, { iframe, placeholder })
 
       chatEl.appendChild(card)
       chatEl.scrollTop = chatEl.scrollHeight
     }
+
+    // ── Widget message handler ───────────────────────────────────────
+    window.addEventListener('message', (event) => {
+      const msg = event.data
+      if (!msg || !msg.type) return
+
+      let widgetId = null
+      for (const [id, { iframe }] of widgets) {
+        if (iframe.contentWindow === event.source) {
+          widgetId = id
+          break
+        }
+      }
+      if (!widgetId) return
+
+      const { iframe, placeholder } = widgets.get(widgetId)
+
+      switch (msg.type) {
+        case 'WIDGET_RESIZE':
+          iframe.style.height = msg.height + 'px'
+          // Hide placeholder after first height report
+          placeholder.classList.add('loaded')
+          // Scroll after layout settles
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              chatEl.scrollTop = chatEl.scrollHeight
+            })
+          })
+          break
+
+        case 'WIDGET_SEND_PROMPT':
+          inputEl.value = msg.text
+          inputEl.dispatchEvent(new Event('input'))
+          break
+
+        case 'WIDGET_OPEN_LINK':
+          window.open(msg.url, '_blank', 'noopener,noreferrer')
+          break
+      }
+    })
 
     // ── Input handling ────────────────────────────────────────────
     function sendMessage() {
