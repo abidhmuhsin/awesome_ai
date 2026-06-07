@@ -807,6 +807,10 @@
       // Track active tool call elements by id
       const toolEls = new Map()
 
+      // Track streaming state
+      let currentStreamEl = null
+      let currentStreamText = ''
+
       ws.addEventListener('message', (evt) => {
         const msg = JSON.parse(evt.data)
 
@@ -820,6 +824,44 @@
           const el = toolEls.get(msg.id)
           if (el) appendToolCallEnd(el, msg)
           toolEls.delete(msg.id)
+          return
+        }
+
+        // Handle streaming events
+        if (msg.type === 'agent_stream_start') {
+          removeTyping()
+          currentStreamEl = appendMessage('agent', '')
+          currentStreamText = ''
+          return
+        }
+
+        if (msg.type === 'agent_stream_delta') {
+          if (currentStreamEl) {
+            currentStreamText += msg.text
+            const textEl = currentStreamEl.querySelector('div')
+            if (textEl) {
+              textEl.textContent = currentStreamText
+              chatEl.scrollTop = chatEl.scrollHeight
+            }
+          }
+          return
+        }
+
+        if (msg.type === 'agent_stream_end') {
+          if (currentStreamEl) {
+            const textEl = currentStreamEl.querySelector('div')
+            if (textEl) {
+              textEl.textContent = msg.text || currentStreamText
+            }
+          }
+          currentStreamEl = null
+          currentStreamText = ''
+          return
+        }
+
+        // Handle tool stream updates (optional progress data)
+        if (msg.type === 'tool_stream_update') {
+          // Could display tool progress if needed
           return
         }
 
@@ -934,14 +976,15 @@
     }
 
     function appendMessage(type, text) {
-      if (!text || !text.trim()) return
+      // Allow empty text for streaming (will be filled incrementally)
+      if (type !== 'agent' && (!text || !text.trim())) return
 
       const el = document.createElement('div')
       el.classList.add('msg', type)
 
       // Message text
       const textEl = document.createElement('div')
-      textEl.textContent = text
+      textEl.textContent = text || ''
       el.appendChild(textEl)
 
       // Copy button (inside the message bubble, top-right)
@@ -965,6 +1008,7 @@
 
       chatEl.appendChild(el)
       chatEl.scrollTop = chatEl.scrollHeight
+      return el
     }
 
     function showTyping() {

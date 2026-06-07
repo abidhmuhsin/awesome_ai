@@ -101,13 +101,62 @@ export async function startWebSocket(port = 3000) {
         ws.send(JSON.stringify({ type: 'typing', text: '' }))
         const t0 = Date.now()
 
-        // ── Invoke agent ───────────────────────────────────────────
-        const result = await agent.invoke(text)
+        // ── Stream agent response ──────────────────────────────────
+        let fullReply = ''
+        let streamStarted = false
 
-        const reply = extractText(agent) ?? '(no response)'
+        for await (const event of agent.stream(text)) {
+          switch (event.type) {
+            case 'modelStreamUpdateEvent': {
+              // Handle streaming text deltas
+              const delta = event.event
+              if (delta.type === 'modelContentBlockDeltaEvent') {
+                const contentDelta = delta.delta
+                if (contentDelta.type === 'textDelta') {
+                  if (!streamStarted) {
+                    streamStarted = true
+                    ws.send(JSON.stringify({ type: 'agent_stream_start', text: '' }))
+                  }
+                  fullReply += contentDelta.text
+                  ws.send(JSON.stringify({ type: 'agent_stream_delta', text: contentDelta.text }))
+                }
+              }
+              break
+            }
+            case 'contentBlockEvent': {
+              // Content block completed - extract full text if needed
+              const block = event.contentBlock
+              if (block.type === 'textBlock' && block.text) {
+                // Use this as the authoritative text (replaces accumulated deltas)
+                fullReply = block.text
+              }
+              break
+            }
+            case 'toolStreamUpdateEvent': {
+              // Tool is streaming progress updates
+              const toolEvent = event.event
+              if (toolEvent.data) {
+                ws.send(JSON.stringify({
+                  type: 'tool_stream_update',
+                  id: event.invocationState?.toolUseId,
+                  data: toolEvent.data,
+                }))
+              }
+              break
+            }
+          }
+        }
+
         const responseTime = Date.now() - t0
 
-        ws.send(JSON.stringify({ type: 'agent', text: reply }))
+        // Send final complete response
+        if (streamStarted) {
+          ws.send(JSON.stringify({ type: 'agent_stream_end', text: fullReply }))
+        } else {
+          // No streaming occurred (e.g., tool-only response)
+          const reply = extractText(agent) ?? '(no response)'
+          ws.send(JSON.stringify({ type: 'agent', text: reply }))
+        }
 
         // Check if the agent produced any new widgets
         const widgets = widgetCache.extractWidgets(agent)
@@ -115,10 +164,9 @@ export async function startWebSocket(port = 3000) {
           ws.send(JSON.stringify({ type: 'widget', title: widget.title, widget_code: widget.widget_code }))
         }
 
-        log.outgoing(`ws#${id}`, reply, responseTime)
+        log.outgoing(`ws#${id}`, fullReply || '(streamed)', responseTime)
 
         if (wasByebyeCalled(agent)) {
-          logUsage(result)
           ws.send(JSON.stringify({ type: 'system', text: 'Session ended.' }))
           ws.close()
         }
