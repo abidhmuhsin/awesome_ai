@@ -754,17 +754,30 @@
 
     // ── Theme ─────────────────────────────────────────────────────
     function setTheme(dark) {
-      htmlEl.setAttribute('data-theme', dark ? 'dark' : 'light')
-      localStorage.setItem('theme', dark ? 'dark' : 'light')
+      const theme = dark ? 'dark' : 'light'
+      htmlEl.setAttribute('data-theme', theme)
+      localStorage.setItem('theme', theme)
+      console.log('[Theme] Set to:', theme)
     }
 
     // Init theme: localStorage > dark default
     const saved = localStorage.getItem('theme')
+    console.log('[Theme] Initial load from localStorage:', saved || 'dark (default)')
     setTheme(saved !== 'light')
 
     themeBtn.addEventListener('click', () => {
       const current = htmlEl.getAttribute('data-theme')
       setTheme(current !== 'dark')
+      // Sync theme to all widget iframes
+      const theme = htmlEl.getAttribute('data-theme')
+      console.log('[Theme] User toggled to:', theme, '| Syncing to', widgets.size, 'iframe(s)')
+      for (const [, { iframe }] of widgets) {
+        try {
+          iframe.contentWindow.postMessage({ type: 'THEME_CHANGE', theme }, '*')
+        } catch (e) {
+          console.warn('[Theme] Failed to sync to iframe:', e)
+        }
+      }
     })
 
     // ── WebSocket ─────────────────────────────────────────────────
@@ -990,6 +1003,15 @@
       --border: rgba(255,255,255,0.08);
       --radius: 4px;
     }
+    [data-theme="light"] {
+      --bg: #f5f5f5;
+      --surface: #ffffff;
+      --text: #111111;
+      --text-muted: #888888;
+      --accent: #cc3333;
+      --accent-hover: #aa2222;
+      --border: rgba(0,0,0,0.08);
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
       margin: 0;
@@ -1034,6 +1056,18 @@
       })
     }
 
+    // Listen for theme changes from parent
+    window.addEventListener('message', function(e) {
+      if (e.data && e.data.type === 'THEME_CHANGE') {
+        document.documentElement.setAttribute('data-theme', e.data.theme)
+        console.log('[Widget Theme] Received:', e.data.theme)
+      }
+    })
+    // Request initial theme from parent on load
+    window.addEventListener('load', function() {
+      console.log('[Widget Theme] Requesting theme from parent')
+      window.parent.postMessage({ type: 'THEME_REQUEST' }, '*')
+    })
     window.sendPrompt = function(text) {
       window.parent.postMessage({ type: 'WIDGET_SEND_PROMPT', text }, '*')
     }
@@ -1139,6 +1173,18 @@
 
         case 'WIDGET_OPEN_LINK':
           window.open(msg.url, '_blank', 'noopener,noreferrer')
+          break
+
+        case 'THEME_REQUEST':
+          // Send current theme to newly loaded iframe
+          const currentTheme = htmlEl.getAttribute('data-theme') || 'dark'
+          console.log('[Theme] Iframe requested theme, responding with:', currentTheme)
+          for (const [, { iframe: f }] of widgets) {
+            if (f.contentWindow === event.source) {
+              f.contentWindow.postMessage({ type: 'THEME_CHANGE', theme: currentTheme }, '*')
+              break
+            }
+          }
           break
       }
     })

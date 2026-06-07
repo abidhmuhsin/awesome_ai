@@ -251,16 +251,23 @@ Always resolve theme values first:
 const styles = getComputedStyle(document.documentElement)
 
 const theme = {
+  bg: styles.getPropertyValue('--bg').trim() || '#000000',
   accent: styles.getPropertyValue('--accent').trim() || '#ff4d4d',
   text: styles.getPropertyValue('--text').trim() || '#ffffff',
   textMuted: styles.getPropertyValue('--text-muted').trim() || '#888888',
   surface: styles.getPropertyValue('--surface').trim() || '#1a1a1a'
 }
 
+Derive adaptive grid/border colors from theme (NEVER hardcode rgba values):
+- Use theme.textMuted with low opacity for subtle grid lines
+- Example: grid color from theme.textMuted → parse hex → apply ~0.08–0.12 alpha
+- Alternative: use theme.surface with slightly adjusted alpha for contrast
+
 Never use:
 - 'var(--accent)'
 - 'var(--text)'
 - 'var(--text-muted)'
+- Hardcoded rgba values like 'rgba(255,255,255,0.08)' — these break on light themes
 
 inside Chart.js config.
 
@@ -330,10 +337,21 @@ Apply based on chart type:
 const styles = getComputedStyle(document.documentElement)
 
 const theme = {
+  bg: styles.getPropertyValue('--bg').trim() || '#000000',
   accent: styles.getPropertyValue('--accent').trim() || '#ff4d4d',
   text: styles.getPropertyValue('--text').trim() || '#ffffff',
-  textMuted: styles.getPropertyValue('--text-muted').trim() || '#888888'
+  textMuted: styles.getPropertyValue('--text-muted').trim() || '#888888',
+  surface: styles.getPropertyValue('--surface').trim() || '#1a1a1a'
 }
+
+// Helper: derive adaptive grid color from textMuted with low opacity
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')'
+}
+const gridColor = hexToRgba(theme.textMuted, 0.1)
 
 const canvas = document.getElementById('chart_12345')
 
@@ -372,7 +390,7 @@ if (canvas) {
               color: theme.textMuted
             },
             grid: {
-              color: 'rgba(255,255,255,0.08)'
+              color: gridColor
             }
           },
           y: {
@@ -380,7 +398,7 @@ if (canvas) {
               color: theme.textMuted
             },
             grid: {
-              color: 'rgba(255,255,255,0.08)'
+              color: gridColor
             }
           }
         }
@@ -402,6 +420,7 @@ if (canvas) {
 - dynamic imports
 - React/Vue/Angular/jQuery
 - CSS variables directly inside Chart.js config
+- Hardcoded color values like 'rgba(255,255,255,...)' or 'rgba(0,0,0,...)' — always derive from theme
 
 ---
 
