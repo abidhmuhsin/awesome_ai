@@ -1,50 +1,448 @@
 import { tool } from '@strands-agents/sdk'
 import { z } from 'zod'
 
-const INSTRUCTIONS = `%%WIDGET_INSTR%%
-# Visual Widget Instructions
+type WidgetType = 'all' | 'svg' | 'html' | 'chartjs'
 
-## CSS Variables (use these for theming)
-- --bg: #0f0f0f (background)
-- --surface: #1a1a1a (card/panel background)
-- --text: #ffffff (foreground text)
-- --text-muted: #666666 (secondary text)
-- --accent: #ff4d4d (accent/highlight color)
-- --accent-hover: #ff2020 (hover state)
-- --radius: 4px (border radius)
+const GLOBAL_RULES = `
+%%WIDGET_INSTR%%
+
+# Universal Widget Rules
+
+## Core Requirements
+- Output must be self-contained
+- Output must be valid markup
+- No markdown code fences
+- No explanations
+- No surrounding prose
+- No comments unless explicitly requested
+
+## Theming
+Use only these CSS variables:
+
+- var(--bg)
+- var(--surface)
+- var(--text)
+- var(--text-muted)
+- var(--accent)
+- var(--accent-hover)
+- var(--radius)
+
+Do not hardcode theme colors unless explicitly requested.
+
+## Layout
+- Keep background transparent
+- Avoid top-level padding
+- Mobile responsive by default
+- Avoid fixed widths
+- Prefer flexbox or grid
+- Do not depend on parent styles
+
+## Reliability
+- All IDs must be unique
+- Validate markup before returning
+- Avoid unnecessary complexity
+- Fail gracefully if JS cannot execute
+- Never depend on parent scripts
+
+## Forbidden
+- fetch()
+- websocket connections
+- localStorage
+- sessionStorage
+- document.write()
+- alert()
+- prompt()
+- confirm()
+`
+
+const SVG_INSTRUCTIONS = `
+# SVG Widget Generation Rules
+
+## Output Requirements
+- Output MUST start with <svg
+- Output MUST contain exactly one root SVG
+- Do NOT wrap SVG inside divs
+- Use valid SVG markup only
+- Include xmlns="http://www.w3.org/2000/svg"
+
+## Sizing
+- Always include viewBox
+- Never rely on fixed width/height
+- Design for responsive scaling
+
+Example:
+
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 800 400"
+>
+
+## Styling
+Use CSS variables:
+
+- var(--bg)
+- var(--surface)
+- var(--text)
+- var(--text-muted)
+- var(--accent)
+- var(--accent-hover)
+
+## Text
+Always define:
+- font-size
+- fill
+
+Use text-anchor when alignment matters.
+
+## Layout
+- Keep all content within viewBox
+- Leave safe padding around edges
+- Avoid clipping
+
+## Accessibility
+Include:
+
+<title>Widget Title</title>
+<desc>Widget Description</desc>
+
+## Forbidden
+- foreignObject
+- external assets
+- remote fonts
+- scripts
+- external CSS
+
+## Reliability Rules
+- Coordinates must be numeric
+- Close all tags
+- Avoid percentage coordinates
+
+## Output
+Return SVG markup only.
+`
+
+const HTML_INSTRUCTIONS = `
+# HTML Widget Generation Rules
+
+## Output Requirements
+Return a single HTML fragment.
+
+Do NOT include:
+- <!DOCTYPE>
+- <html>
+- <head>
+- <body>
+
+## Root Container
+
+Always use a single wrapper:
+
+<div class="widget-root">
+...
+</div>
+
+## Styling
+
+Use:
+- Inline styles
+OR
+- One style block
+
+Use CSS variables only.
 
 ## Layout Rules
-- Keep background transparent — the container provides the background
-- Avoid top-level padding (the chat card adds its own)
-- For SVG: use viewBox for responsive sizing, start with <svg tag
-- For HTML: do NOT include DOCTYPE, html, head, or body tags
-- Scripts execute after rendering
 
-## SVG Example
-<svg viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
-  <rect x="10" y="140" width="60" height="50" fill="var(--accent)" rx="2"/>
-  <rect x="90" y="80" width="60" height="110" fill="var(--accent)" rx="2" opacity="0.8"/>
-  <rect x="170" y="40" width="60" height="150" fill="var(--accent)" rx="2" opacity="0.6"/>
-  <text x="40" y="175" text-anchor="middle" fill="var(--text-muted)" font-size="10">A</text>
-  <text x="120" y="175" text-anchor="middle" fill="var(--text-muted)" font-size="10">B</text>
-  <text x="200" y="175" text-anchor="middle" fill="var(--text-muted)" font-size="10">C</text>
-</svg>
+- Responsive by default
+- Use flexbox or grid
+- Avoid absolute positioning
+- Avoid viewport units
+- Avoid page layouts
 
-## HTML Example
-<div style="font-family: sans-serif; color: var(--text);">
-  <div style="display: flex; gap: 12px; align-items: center;">
-    <div style="width: 48px; height: 48px; border-radius: 50%; background: var(--accent); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px;">A</div>
-    <div>
-      <div style="font-weight: 600;">Card Title</div>
-      <div style="color: var(--text-muted); font-size: 0.85em;">Description text here</div>
-    </div>
-  </div>
-</div>`
+## JavaScript
+
+Only when necessary.
+
+Rules:
+- Place scripts after markup
+- Execute immediately
+- Avoid globals
+
+## IDs
+
+Pattern:
+
+widget_<unique>
+
+Example:
+
+widget_48291
+
+## Accessibility
+
+Interactive elements must include:
+- aria-label
+- keyboard support
+
+Buttons must include:
+- type="button"
+
+## Forbidden
+
+- React
+- Vue
+- Angular
+- jQuery
+- fetch()
+- localStorage
+- sessionStorage
+
+## CSS Rules
+
+Do not use:
+
+*
+body
+html
+
+Use scoped selectors only.
+
+Good:
+
+.widget-root {}
+
+## Reliability Rules
+
+- Close all tags
+- No invalid nesting
+- No global CSS resets
+
+## Output
+
+Return HTML fragment only.
+`
+
+const CHARTJS_INSTRUCTIONS = `
+## Chart.js Instructions
+
+### Core Requirements
+
+- Include Chart.js via CDN:
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+- Return exactly:
+  1. Container div
+  2. Canvas element
+  3. CDN script
+  4. Initialization script
+
+- Canvas ID must be unique (chart_<id> pattern recommended)
+- Container must define explicit height (required for rendering)
+- Width should be 100% (responsive layout)
+- Do NOT rely on parent styles
+
+---
+
+### Theme Handling (IMPORTANT)
+
+Chart.js renders to canvas and cannot reliably use CSS variables directly.
+
+Always resolve theme values first:
+
+const styles = getComputedStyle(document.documentElement)
+
+const theme = {
+  accent: styles.getPropertyValue('--accent').trim() || '#ff4d4d',
+  text: styles.getPropertyValue('--text').trim() || '#ffffff',
+  textMuted: styles.getPropertyValue('--text-muted').trim() || '#888888',
+  surface: styles.getPropertyValue('--surface').trim() || '#1a1a1a'
+}
+
+Never use:
+- 'var(--accent)'
+- 'var(--text)'
+- 'var(--text-muted)'
+
+inside Chart.js config.
+
+---
+
+### Required Safety Checks
+
+Always:
+
+- Verify canvas exists before initializing
+- Wrap Chart.js creation in try/catch
+- Avoid runtime crashes silently breaking UI
+
+---
+
+### Required Options
+
+Always set:
+
+responsive: true,
+maintainAspectRatio: false
+
+Explicitly define:
+
+- x/y axis ticks colors
+- grid colors
+- legend label colors
+- tooltip styling
+
+---
+
+### Chart Type Guidance (Generic)
+
+Apply based on chart type:
+
+- Bar / Column:
+  - borderRadius: 4
+  - use backgroundColor for bars
+
+- Line:
+  - tension: 0.3–0.4
+  - use borderColor + optional fill
+
+- Doughnut / Pie:
+  - use array of colors
+  - ensure good contrast between segments
+
+---
+
+### Data Integrity
+
+- labels.length MUST equal dataset.data.length
+- Avoid undefined or null values
+- Do not generate random data unless explicitly requested
+
+---
+
+### Example Pattern (Generic)
+
+<div style="width:100%;height:320px;">
+  <canvas id="chart_12345"></canvas>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+const styles = getComputedStyle(document.documentElement)
+
+const theme = {
+  accent: styles.getPropertyValue('--accent').trim() || '#ff4d4d',
+  text: styles.getPropertyValue('--text').trim() || '#ffffff',
+  textMuted: styles.getPropertyValue('--text-muted').trim() || '#888888'
+}
+
+const canvas = document.getElementById('chart_12345')
+
+if (canvas) {
+  try {
+    new Chart(canvas, {
+      type: 'bar', // can be bar, line, doughnut, etc.
+      data: {
+        labels: ['A', 'B', 'C'],
+        datasets: [{
+          label: 'Dataset',
+          data: [10, 20, 15],
+          backgroundColor: theme.accent
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+
+        plugins: {
+          legend: {
+            labels: {
+              color: theme.text
+            }
+          },
+          tooltip: {
+            backgroundColor: theme.surface,
+            titleColor: theme.text,
+            bodyColor: theme.text
+          }
+        },
+
+        scales: {
+          x: {
+            ticks: {
+              color: theme.textMuted
+            },
+            grid: {
+              color: 'rgba(255,255,255,0.08)'
+            }
+          },
+          y: {
+            ticks: {
+              color: theme.textMuted
+            },
+            grid: {
+              color: 'rgba(255,255,255,0.08)'
+            }
+          }
+        }
+      }
+    })
+  } catch (err) {
+    console.error(err)
+  }
+}
+</script>
+
+---
+
+### Forbidden
+
+- fetch()
+- async data loading
+- external plugins
+- dynamic imports
+- React/Vue/Angular/jQuery
+- CSS variables directly inside Chart.js config
+
+---
+
+### Output Rule
+
+Return only valid widget markup.
+No explanations.
+No markdown.
+`
+
+const INSTRUCTION_MAP: Record<WidgetType, string> = {
+  svg: `${GLOBAL_RULES}\n${SVG_INSTRUCTIONS}`,
+  html: `${GLOBAL_RULES}\n${HTML_INSTRUCTIONS}`,
+  chartjs: `${GLOBAL_RULES}\n${CHARTJS_INSTRUCTIONS}`,
+  all: `
+${GLOBAL_RULES}
+
+${SVG_INSTRUCTIONS}
+
+${HTML_INSTRUCTIONS}
+
+${CHARTJS_INSTRUCTIONS}
+`,
+}
 
 export const widgetInstrTool = tool({
   name: 'widget_instr',
   description:
-    'Get CSS variables, layout rules, and SVG/HTML examples for rendering visual widgets. Call this before your first widget render.',
-  inputSchema: z.object({}),
-  callback: async () => INSTRUCTIONS,
+    'Returns strict production-grade widget generation instructions for SVG, HTML, and Chart.js widgets. Optimized for rendering reliability and self-contained output.',
+
+  inputSchema: z.object({
+    type: z
+      .enum(['all', 'svg', 'html', 'chartjs'])
+      .optional()
+      .default('all')
+      .describe(
+        'Instruction set to return. One of: all, svg, html, chartjs'
+      ),
+  }),
+
+  callback: async ({ type = 'all' }) => {
+    return INSTRUCTION_MAP[type]
+  },
 })
