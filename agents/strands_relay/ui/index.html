@@ -591,7 +591,7 @@
       background-size: 80px 80px;
     }
 
-    /* ── Widget card (iframe container) ────────────────────────────── */
+    /* ── Widget card (non-streaming, final render) ────────────────────── */
     .widget-card {
       align-self: flex-start;
       max-width: 720px;
@@ -629,6 +629,119 @@
       border: none;
       background: transparent;
       height: 0px;
+    }
+
+    /* ── Streaming widget card (typewriter code view) ──────────────────── */
+    .widget-stream-card {
+      align-self: flex-start;
+      max-width: 720px;
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: visible;
+      animation: messageIn 0.3s ease-out forwards;
+      opacity: 0;
+    }
+
+    .widget-stream-header {
+      padding: 8px 14px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .widget-stream-header .stream-label {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .widget-stream-header .stream-status {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.58rem;
+      color: var(--accent);
+      font-weight: 600;
+      letter-spacing: 0.06em;
+    }
+
+    .stream-status .stream-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: streamPulse 1.2s infinite ease-in-out;
+    }
+
+    @keyframes streamPulse {
+      0%, 100% { opacity: 0.2; transform: scale(0.7); }
+      50% { opacity: 1; transform: scale(1.1); }
+    }
+
+    /* Code typewriter area */
+    /* Progressively rendered widget content */
+    .widget-stream-content {
+      padding: 0;
+      background: transparent;
+      min-height: 48px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Blinking cursor appended after content while streaming */
+    .widget-stream-content.streaming::after {
+      content: '';
+      display: inline-block;
+      width: 0.55em;
+      height: 1.1em;
+      background: var(--accent);
+      vertical-align: text-bottom;
+      animation: cursorBlink 1s step-end infinite;
+      margin-left: 1px;
+    }
+
+    @keyframes cursorBlink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+
+    /* Transition: remove cursor when finalized */
+    .widget-stream-card.finalized .widget-stream-content {
+      min-height: 0;
+    }
+
+    .widget-stream-card.finalized .widget-stream-content::after {
+      display: none;
+    }
+
+    /* Iframe wrapper for final render */
+    .widget-stream-iframe-wrap {
+      width: 100%;
+      display: none;
+    }
+
+    .widget-stream-card.finalized .widget-stream-iframe-wrap {
+      display: block;
+    }
+
+    .widget-stream-card.finalized .widget-stream-content {
+      display: none;
+    }
+
+    .widget-stream-iframe {
+      display: block;
+      width: 100%;
+      border: none;
+      background: transparent;
+      height: 0;
     }
 
     /* ── Diagonal crop decoration ─────────────────────────────────── */
@@ -859,6 +972,12 @@
           return
         }
 
+        // Handle raw tool input deltas (STREAMING widget renderer)
+        if (msg.type === 'tool_input_delta') {
+          appendStreamingDelta(msg.delta)
+          return
+        }
+
         // Handle tool stream updates (optional progress data)
         if (msg.type === 'tool_stream_update') {
           // Could display tool progress if needed
@@ -868,12 +987,24 @@
         // Show typing indicator when agent starts processing
         if (msg.type === 'typing') {
           showTyping()
+          // Reset streaming widget state for new message
+          if (activeStreamWidget) {
+            finalizeStreamingWidget(activeStreamWidget, streamWidgetTitle)
+            activeStreamWidget = null
+            streamWidgetCode = ''
+            streamWidgetTitle = ''
+          }
           return
         }
 
         removeTyping()
 
         if (msg.type === 'widget') {
+          // Skip if already rendered via streaming
+          if (streamedWidgetTitles.has(msg.title)) {
+            streamedWidgetTitles.delete(msg.title)  // Clean up
+            return
+          }
           appendWidget(msg.title, msg.widget_code)
         } else {
           appendMessage(msg.type, msg.text)
@@ -1030,6 +1161,7 @@
     const widgets = new Map()
     let widgetCounter = 0
 
+    // Shared iframe page builder (used by both renderers)
     function buildIframePage(widgetCode) {
       return `<!DOCTYPE html>
 <html>
@@ -1068,82 +1200,35 @@
       line-height: 1.65;
     }
     body { padding: 16px; }
-    /* Ensure SVGs render properly and fill width */
-    svg {
-      display: block;
-      width: 100%;
-      height: auto;
-      max-width: 100%;
-      overflow: visible;
-    }
-    /* Ensure all SVG child elements use the CSS custom properties */
-    svg text, svg rect, svg circle, svg path, svg line, svg polyline, svg g {
-      color: var(--text);
-    }
+    svg { display: block; width: 100%; height: auto; max-width: 100%; overflow: visible; }
+    svg text, svg rect, svg circle, svg path, svg line, svg polyline, svg g { color: var(--text); }
   </style>
   <script>
-    // Apply CSS variables to SVG elements that use var() in attributes
     function applySvgCssVars() {
       const style = getComputedStyle(document.documentElement)
       const vars = ['--text', '--accent', '--text-muted', '--bg', '--surface', '--border']
-      
       document.querySelectorAll('svg [fill], svg [stroke]').forEach(el => {
         vars.forEach(v => {
           const val = style.getPropertyValue(v).trim()
-          if (el.getAttribute('fill') === 'var(' + v + ')') {
-            el.setAttribute('fill', val)
-          }
-          if (el.getAttribute('stroke') === 'var(' + v + ')') {
-            el.setAttribute('stroke', val)
-          }
+          if (el.getAttribute('fill') === 'var(' + v + ')') el.setAttribute('fill', val)
+          if (el.getAttribute('stroke') === 'var(' + v + ')') el.setAttribute('stroke', val)
         })
       })
     }
-
-    // Listen for theme changes from parent
     window.addEventListener('message', function(e) {
-      if (e.data && e.data.type === 'THEME_CHANGE') {
-        document.documentElement.setAttribute('data-theme', e.data.theme)
-        console.log('[Widget Theme] Received:', e.data.theme)
-      }
+      if (e.data && e.data.type === 'THEME_CHANGE') document.documentElement.setAttribute('data-theme', e.data.theme)
     })
-    // Request initial theme from parent on load
-    window.addEventListener('load', function() {
-      console.log('[Widget Theme] Requesting theme from parent')
-      window.parent.postMessage({ type: 'THEME_REQUEST' }, '*')
-    })
-    window.sendPrompt = function(text) {
-      window.parent.postMessage({ type: 'WIDGET_SEND_PROMPT', text }, '*')
-    }
-    window.openLink = function(url) {
-      window.parent.postMessage({ type: 'WIDGET_OPEN_LINK', url }, '*')
-    }
+    window.addEventListener('load', function() { window.parent.postMessage({ type: 'THEME_REQUEST' }, '*') })
+    window.sendPrompt = function(text) { window.parent.postMessage({ type: 'WIDGET_SEND_PROMPT', text }, '*') }
+    window.openLink = function(url) { window.parent.postMessage({ type: 'WIDGET_OPEN_LINK', url }, '*') }
     let lastHeight = 0
     function reportHeight() {
-      // Use offsetHeight for accurate content height (excludes overflow)
       const h = document.body.offsetHeight || document.documentElement.offsetHeight
-      if (h > 0 && h !== lastHeight) {
-        lastHeight = h
-        window.parent.postMessage({ type: 'WIDGET_RESIZE', height: h }, '*')
-      }
+      if (h > 0 && h !== lastHeight) { lastHeight = h; window.parent.postMessage({ type: 'WIDGET_RESIZE', height: h }, '*') }
     }
-    // Apply CSS vars and report height on load
-    window.addEventListener('load', function() {
-      applySvgCssVars()
-      // Small delay to let SVG render
-      setTimeout(reportHeight, 50)
-    })
-    document.addEventListener('DOMContentLoaded', function() {
-      applySvgCssVars()
-      reportHeight()
-    })
-    // Watch for DOM changes (new content, animations)
-    new MutationObserver(function() {
-      clearTimeout(window._rht)
-      window._rht = setTimeout(reportHeight, 150)
-    }).observe(document.body, {
-      subtree: true, childList: true
-    })
+    window.addEventListener('load', function() { applySvgCssVars(); setTimeout(reportHeight, 50) })
+    document.addEventListener('DOMContentLoaded', function() { applySvgCssVars(); reportHeight() })
+    new MutationObserver(function() { clearTimeout(window._rht); window._rht = setTimeout(reportHeight, 150) }).observe(document.body, { subtree: true, childList: true })
   <\/script>
 </head>
 <body>
@@ -1152,6 +1237,8 @@
 </html>`
     }
 
+    // ── NON-STREAMING Widget Renderer (existing behavior) ──────────
+    // Renders widget after agent completes (for widget_renderer tool)
     function appendWidget(title, widgetCode) {
       const id = 'w_' + (++widgetCounter)
 
@@ -1176,9 +1263,232 @@
       card.appendChild(iframe)
 
       widgets.set(id, { iframe, placeholder })
-
       chatEl.appendChild(card)
       chatEl.scrollTop = chatEl.scrollHeight
+    }
+
+    // ── STREAMING Widget Renderer (progressive HTML rendering) ──────
+    // Renders widget sections in real-time as HTML is generated
+
+    let activeStreamWidget = null  // Currently streaming widget (null if none)
+    let streamWidgetCode = ''      // Accumulated widget code so far
+    let streamWidgetTitle = ''     // Widget title (extracted from first deltas)
+    const streamedWidgetTitles = new Set()  // Track titles rendered via streaming
+
+    /**
+     * Called on every tool_input_delta message.
+     * Extracts HTML from JSON, progressively renders each section as it arrives.
+     */
+    function appendStreamingDelta(delta) {
+      streamWidgetCode += delta
+
+      // ── Extract title early for the header ──────────────────────
+      const titleMatch = streamWidgetCode.match(/"title"\s*:\s*"([^"]*?)"/)
+      const title = titleMatch ? titleMatch[1] : null
+
+      // ── Create streaming card on first delta ────────────────────
+      if (!activeStreamWidget && title) {
+        activeStreamWidget = createStreamingWidget(title)
+        streamWidgetTitle = title
+      }
+
+      // ── If we have an active streaming widget, progressively render ──
+      if (activeStreamWidget) {
+        // Extract partial HTML from widget_code
+        const htmlContent = extractWidgetCodePartial(streamWidgetCode)
+
+        if (htmlContent) {
+          // Decode JSON escapes for rendering
+          const decoded = decodeJsonString(htmlContent)
+          // Render progressively in the content div
+          renderProgressiveHTML(activeStreamWidget.contentEl, decoded)
+        }
+
+        // ── Check if widget_code is COMPLETE (closing quote found) ──
+        if (isWidgetCodeComplete(streamWidgetCode)) {
+          finalizeStreamingWidget(activeStreamWidget, streamWidgetTitle)
+          activeStreamWidget = null
+          streamWidgetCode = ''
+          streamWidgetTitle = ''
+        }
+      }
+
+      chatEl.scrollTop = chatEl.scrollHeight
+    }
+
+    /**
+     * Extract partial widget_code content from accumulated JSON.
+     * Returns the raw string value (still JSON-escaped).
+     */
+    function extractWidgetCodePartial(json) {
+      const keyIdx = json.indexOf('"widget_code"')
+      if (keyIdx === -1) return null
+
+      const afterKey = json.substring(keyIdx + 13)
+      const colonIdx = afterKey.indexOf(':')
+      if (colonIdx === -1) return null
+
+      const afterColon = afterKey.substring(colonIdx + 1).trimStart()
+      if (afterColon[0] !== '"') return null
+
+      return afterColon.substring(1)  // Everything after opening quote
+    }
+
+    /**
+     * Decode common JSON string escapes.
+     */
+    function decodeJsonString(str) {
+      // Decode JSON string escapes in order (backslash first to avoid double-decode)
+      return str
+        .replace(/\\\\/g, '\\')   // \\\\ → \\
+        .replace(/\\n/g, '\n')       // \\n → newline
+        .replace(/\\r/g, '\r')       // \\r → carriage return
+        .replace(/\\t/g, '\t')       // \\t → tab
+        .replace(/\\"/g, '"')       // \\" → quote
+        .replace(/\\\//g, '/')        // \\/ → slash
+        .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))  // \\uXXXX → char
+    }
+
+    /**
+     * Progressively render HTML into the content div.
+     * Uses innerHTML which handles partial HTML gracefully.
+     */
+    function renderProgressiveHTML(container, htmlContent) {
+      container.innerHTML = htmlContent
+    }
+
+    /**
+     * Check if the widget_code string is complete in the accumulated JSON.
+     * Looks for the closing quote of the widget_code value.
+     */
+    function isWidgetCodeComplete(json) {
+      const keyIdx = json.indexOf('"widget_code"')
+      if (keyIdx === -1) return false
+
+      const afterKey = json.substring(keyIdx + 13)
+      const colonIdx = afterKey.indexOf(':')
+      if (colonIdx === -1) return false
+
+      const afterColon = afterKey.substring(colonIdx + 1)
+      const quoteIdx = afterColon.indexOf('"')
+      if (quoteIdx === -1) return false
+
+      // Walk through string, tracking escapes, to find closing quote
+      let i = quoteIdx + 1
+      let escaped = false
+      while (i < afterColon.length) {
+        const ch = afterColon[i]
+        if (escaped) {
+          escaped = false
+        } else if (ch === '\\') {
+          escaped = true
+        } else if (ch === '"') {
+          return true  // Found the closing quote!
+        }
+        i++
+      }
+      return false  // Still streaming...
+    }
+
+    /**
+     * Create the streaming widget card with header + progressive content area.
+     * Returns an object with references to update later.
+     */
+    function createStreamingWidget(title) {
+      const card = document.createElement('div')
+      card.classList.add('widget-stream-card')
+
+      // Header
+      const header = document.createElement('div')
+      header.classList.add('widget-stream-header')
+
+      const label = document.createElement('span')
+      label.classList.add('stream-label')
+      label.textContent = title
+      header.appendChild(label)
+
+      const status = document.createElement('span')
+      status.classList.add('stream-status')
+      status.innerHTML = '<span class="stream-dot"></span> BUILDING'
+      header.appendChild(status)
+
+      card.appendChild(header)
+
+      // Progressive content area (rendered HTML)
+      const contentEl = document.createElement('div')
+      contentEl.classList.add('widget-stream-content', 'streaming')
+      card.appendChild(contentEl)
+
+      // Iframe wrapper for final render (hidden initially)
+      const iframeWrap = document.createElement('div')
+      iframeWrap.classList.add('widget-stream-iframe-wrap')
+
+      const iframe = document.createElement('iframe')
+      iframe.title = 'widget: ' + title
+      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
+      iframe.allow = 'fullscreen *; clipboard-write *'
+      iframe.classList.add('widget-stream-iframe')
+      iframeWrap.appendChild(iframe)
+
+      card.appendChild(iframeWrap)
+      chatEl.appendChild(card)
+      chatEl.scrollTop = chatEl.scrollHeight
+
+      return { card, contentEl, iframe, iframeWrap, status }
+    }
+
+    /**
+     * Finalize the streaming widget: render final HTML, transition to iframe.
+     */
+    function finalizeStreamingWidget(stream, title) {
+      // Guard: already finalized
+      if (stream.card.classList.contains('finalized')) return
+
+      // Extract final widget_code from accumulated JSON
+      const codeStart = streamWidgetCode.indexOf('"widget_code"')
+      const afterKey = streamWidgetCode.substring(codeStart + 13)
+      const colonIdx = afterKey.indexOf(':')
+      const afterColon = afterKey.substring(colonIdx + 1)
+      const quoteIdx = afterColon.indexOf('"')
+
+      // Walk to find closing quote, extracting the real content
+      let widgetCode = ''
+      let i = quoteIdx + 1
+      let escaped = false
+      while (i < afterColon.length) {
+        const ch = afterColon[i]
+        if (escaped) {
+          escaped = false
+          switch (ch) {
+            case 'n': widgetCode += '\n'; break
+            case 't': widgetCode += '\t'; break
+            case '"': widgetCode += '"'; break
+            case '\\': widgetCode += '\\'; break
+            default: widgetCode += ch; break
+          }
+        } else if (ch === '\\') {
+          escaped = true
+        } else if (ch === '"') {
+          break  // End of string
+        } else {
+          widgetCode += ch
+        }
+        i++
+      }
+
+      // Update header status
+      stream.status.innerHTML = '<span class="stream-dot" style="background:#22c55e"></span> DONE'
+
+      // Hide progressive content, show iframe
+      stream.card.classList.add('finalized')
+
+      // Render final HTML into iframe for proper sandboxing
+      const id = 'w_' + (++widgetCounter)
+      stream.iframe.srcdoc = buildIframePage(widgetCode)
+      widgets.set(id, { iframe: stream.iframe, placeholder: null })
+
+      // Track this title so we don't duplicate via non-streaming renderer
+      streamedWidgetTitles.add(title)
     }
 
     // ── Widget message handler ───────────────────────────────────────
@@ -1200,8 +1510,8 @@
       switch (msg.type) {
         case 'WIDGET_RESIZE':
           iframe.style.height = msg.height + 'px'
-          // Hide placeholder after first height report
-          placeholder.classList.add('loaded')
+          // Hide placeholder after first height report (if exists)
+          if (placeholder) placeholder.classList.add('loaded')
           // Scroll after layout settles
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {

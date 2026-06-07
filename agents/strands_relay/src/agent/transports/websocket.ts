@@ -120,6 +120,14 @@ export async function startWebSocket(port = 3000) {
                   fullReply += contentDelta.text
                   ws.send(JSON.stringify({ type: 'agent_stream_delta', text: contentDelta.text }))
                 }
+                // Stream widget_renderer tool input as it's generated
+                else if (contentDelta.type === 'toolUseInputDelta') {
+                  // Forward raw tool input delta to client for early rendering
+                  ws.send(JSON.stringify({
+                    type: 'tool_input_delta',
+                    delta: contentDelta.input,
+                  }))
+                }
               }
               break
             }
