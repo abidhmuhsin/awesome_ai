@@ -177,6 +177,60 @@
       z-index: 5;
     }
 
+    #jump-to-latest {
+      position: fixed;
+      left: 50%;
+      bottom: 96px;
+      transform: translateX(-50%) translateY(8px);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      font-family: var(--font-body);
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      box-shadow: var(--shadow-hard);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity var(--transition), transform var(--transition);
+      z-index: 30;
+    }
+
+    #jump-to-latest.visible {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+      pointer-events: auto;
+    }
+
+    #jump-to-latest:hover {
+      background: var(--accent-hover);
+    }
+
+    #jump-to-latest .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: rgba(0,0,0,0.25);
+      font-size: 11px;
+      line-height: 1;
+    }
+
+    #jump-to-latest .arrow {
+      font-size: 14px;
+      line-height: 1;
+    }
+
     #chat::-webkit-scrollbar {
       width: 4px;
     }
@@ -962,6 +1016,12 @@
 
   <div id="chat"></div>
 
+  <button id="jump-to-latest" type="button" aria-label="Jump to latest">
+    <span class="arrow">↓</span>
+    <span>Latest</span>
+    <span class="badge" hidden>0</span>
+  </button>
+
   <form id="input-bar" autocomplete="off">
     <textarea id="input" rows="1" placeholder="TYPE SOMETHING…" autofocus></textarea>
     <button id="send" type="submit">SEND</button>
@@ -1004,6 +1064,55 @@
         }
       }
     })
+
+    // ── Auto-scroll helper ────────────────────────────────────────
+    const SCROLL_THRESHOLD = 120 // px from bottom to count as "at bottom"
+    const jumpBtn   = document.getElementById('jump-to-latest')
+    const jumpBadge = jumpBtn.querySelector('.badge')
+    let unreadCount = 0
+
+    function isNearBottom() {
+      return chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < SCROLL_THRESHOLD
+    }
+
+    function scrollToBottom() {
+      chatEl.scrollTop = chatEl.scrollHeight
+    }
+
+    function updateJumpButton() {
+      const nearBottom = isNearBottom()
+      if (nearBottom) {
+        unreadCount = 0
+        jumpBtn.classList.remove('visible')
+        jumpBadge.hidden = true
+        jumpBadge.textContent = '0'
+      } else {
+        jumpBtn.classList.add('visible')
+        if (unreadCount > 0) {
+          jumpBadge.hidden = false
+          jumpBadge.textContent = String(unreadCount)
+        } else {
+          jumpBadge.hidden = true
+        }
+      }
+    }
+
+    // Track scroll position to show/hide the jump button
+    chatEl.addEventListener('scroll', updateJumpButton, { passive: true })
+
+    // Clicking the button jumps to latest and hides it
+    jumpBtn.addEventListener('click', () => {
+      scrollToBottom()
+      updateJumpButton()
+    })
+
+    // When new content arrives but user is scrolled up, bump unread counter
+    function notifyNewContent() {
+      if (!isNearBottom()) {
+        unreadCount++
+        updateJumpButton()
+      }
+    }
 
     // ── WebSocket ─────────────────────────────────────────────────
     const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -1066,7 +1175,7 @@
             const textEl = currentStreamEl.querySelector('div')
             if (textEl) {
               textEl.textContent = currentStreamText
-              chatEl.scrollTop = chatEl.scrollHeight
+              if (isNearBottom()) scrollToBottom()
             }
           }
           return
@@ -1182,7 +1291,8 @@
       })
 
       chatEl.appendChild(card)
-      chatEl.scrollTop = chatEl.scrollHeight
+      if (isNearBottom()) scrollToBottom()
+      else notifyNewContent()
       return card
     }
 
@@ -1250,7 +1360,8 @@
       }
 
       chatEl.appendChild(el)
-      chatEl.scrollTop = chatEl.scrollHeight
+      if (isNearBottom()) scrollToBottom()
+      else notifyNewContent()
       return el
     }
 
@@ -1261,7 +1372,7 @@
       el.id = 'typing'
       el.innerHTML = '<span></span><span></span><span></span>'
       chatEl.appendChild(el)
-      chatEl.scrollTop = chatEl.scrollHeight
+      if (isNearBottom()) scrollToBottom()
     }
 
     function removeTyping() {
@@ -1376,7 +1487,8 @@
 
       widgets.set(id, { iframe, placeholder })
       chatEl.appendChild(card)
-      chatEl.scrollTop = chatEl.scrollHeight
+      if (isNearBottom()) scrollToBottom()
+      else notifyNewContent()
     }
 
     // ── STREAMING Widget Renderer (progressive HTML rendering) ──────
@@ -1425,7 +1537,7 @@
         }
       }
 
-      chatEl.scrollTop = chatEl.scrollHeight
+      if (isNearBottom()) scrollToBottom()
     }
 
     /**
@@ -1579,7 +1691,8 @@
 
       card.appendChild(iframeWrap)
       chatEl.appendChild(card)
-      chatEl.scrollTop = chatEl.scrollHeight
+      if (isNearBottom()) scrollToBottom()
+      else notifyNewContent()
 
       return { card, contentEl, iframe, iframeWrap, status }
     }
@@ -1665,7 +1778,8 @@
           // Scroll after layout settles
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
-              chatEl.scrollTop = chatEl.scrollHeight
+              if (isNearBottom()) scrollToBottom()
+              else notifyNewContent()
             })
           })
           break
