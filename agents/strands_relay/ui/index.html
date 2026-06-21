@@ -977,6 +977,50 @@
       0%, 100% { opacity: 0.7; transform: scale(1); }
       50% { opacity: 1; transform: scale(1.02); }
     }
+
+    /* ── MCP UI card ─────────────────────────────────────────────── */
+    .mcp-ui-card {
+      align-self: flex-start;
+      max-width: 720px;
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid rgba(255,77,77,0.15);
+      border-radius: var(--radius);
+      overflow: visible;
+      animation: messageIn 0.5s ease-out forwards;
+      opacity: 0;
+    }
+
+    .mcp-ui-header {
+      padding: 8px 14px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--accent);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .mcp-ui-header .mcp-ui-label {
+      color: var(--accent);
+    }
+
+    .mcp-ui-header .mcp-ui-tool {
+      color: var(--text-muted);
+      margin-left: auto;
+      font-size: 0.6rem;
+    }
+
+    .mcp-ui-sandbox {
+      width: 100%;
+      height: 0;
+      border: none;
+      background: transparent;
+      display: block;
+    }
   </style>
 </head>
 <body>
@@ -1227,6 +1271,8 @@
             return
           }
           appendWidget(msg.title, msg.widget_code)
+        } else if (msg.type === 'mcp_ui') {
+          appendMcpUi(msg.tool, msg.html)
         } else {
           appendMessage(msg.type, msg.text)
         }
@@ -1754,11 +1800,90 @@
       streamedWidgetTitles.add(title)
     }
 
-    // ── Widget message handler ───────────────────────────────────────
+    // ── MCP UI Renderer ──────────────────────────────────────────────
+    // Loads MCP tool UI resources in sandbox iframes within the chat
+    const mcpUiIframes = new Map()  // track MCP UI iframes by tool name
+
+    function appendMcpUi(toolName, html) {
+      const card = document.createElement('div')
+      card.classList.add('mcp-ui-card')
+
+      const header = document.createElement('div')
+      header.classList.add('mcp-ui-header')
+
+      const label = document.createElement('span')
+      label.classList.add('mcp-ui-label')
+      label.textContent = 'Tool UI'
+      header.appendChild(label)
+
+      const toolLabel = document.createElement('span')
+      toolLabel.classList.add('mcp-ui-tool')
+      toolLabel.textContent = toolName
+      header.appendChild(toolLabel)
+
+      card.appendChild(header)
+
+      // Sandbox proxy iframe for secure rendering
+      const iframe = document.createElement('iframe')
+      iframe.title = 'mcp-ui: ' + toolName
+      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
+      iframe.classList.add('mcp-ui-sandbox')
+      card.appendChild(iframe)
+
+      chatEl.appendChild(card)
+      mcpUiIframes.set(toolName, iframe)
+
+      // Load sandbox and send HTML content via postMessage
+      loadMcpSandbox(iframe, html)
+
+      if (isNearBottom()) scrollToBottom()
+      else notifyNewContent()
+    }
+
+    const MCP_RESOURCE_READY = 'ui/notifications/sandbox-resource-ready'
+    const MCP_PROXY_READY = 'ui/notifications/sandbox-proxy-ready'
+    let pendingMcpHtml = null
+    let pendingMcpIframe = null
+
+    function loadMcpSandbox(iframe, html) {
+      pendingMcpHtml = html
+      pendingMcpIframe = iframe
+
+      const listener = (event) => {
+        if (event.source === iframe.contentWindow && event.data?.method === MCP_PROXY_READY) {
+          window.removeEventListener('message', listener)
+          // Send HTML to sandbox
+          iframe.contentWindow.postMessage({
+            jsonrpc: '2.0',
+            method: MCP_RESOURCE_READY,
+            params: { html }
+          }, '*')
+          pendingMcpHtml = null
+          pendingMcpIframe = null
+        }
+      }
+      window.addEventListener('message', listener)
+
+      // Timeout fallback: load directly if sandbox doesn't respond
+      setTimeout(() => {
+        if (pendingMcpHtml === html) {
+          window.removeEventListener('message', listener)
+          iframe.removeAttribute('sandbox')
+          iframe.srcdoc = html
+          pendingMcpHtml = null
+          pendingMcpIframe = null
+        }
+      }, 3000)
+
+      iframe.src = '/sandbox.html'
+    }
+
+    // ── Widget + MCP UI message handler ─────────────────────────────
     window.addEventListener('message', (event) => {
       const msg = event.data
       if (!msg || !msg.type) return
 
+      // Check widget iframes
       let widgetId = null
       for (const [id, { iframe }] of widgets) {
         if (iframe.contentWindow === event.source) {
@@ -1766,44 +1891,55 @@
           break
         }
       }
-      if (!widgetId) return
 
-      const { iframe, placeholder } = widgets.get(widgetId)
-
-      switch (msg.type) {
-        case 'WIDGET_RESIZE':
-          iframe.style.height = msg.height + 'px'
-          // Hide placeholder after first height report (if exists)
-          if (placeholder) placeholder.classList.add('loaded')
-          // Scroll after layout settles
-          requestAnimationFrame(() => {
+      if (widgetId) {
+        const { iframe, placeholder } = widgets.get(widgetId)
+        switch (msg.type) {
+          case 'WIDGET_RESIZE':
+            iframe.style.height = msg.height + 'px'
+            if (placeholder) placeholder.classList.add('loaded')
             requestAnimationFrame(() => {
-              if (isNearBottom()) scrollToBottom()
-              else notifyNewContent()
+              requestAnimationFrame(() => {
+                if (isNearBottom()) scrollToBottom()
+                else notifyNewContent()
+              })
             })
-          })
-          break
+            break
+          case 'WIDGET_SEND_PROMPT':
+            inputEl.value = msg.text
+            inputEl.dispatchEvent(new Event('input'))
+            break
+          case 'WIDGET_OPEN_LINK':
+            window.open(msg.url, '_blank', 'noopener,noreferrer')
+            break
+          case 'THEME_REQUEST':
+            const currentTheme = htmlEl.getAttribute('data-theme') || 'dark'
+            iframe.contentWindow.postMessage({ type: 'THEME_CHANGE', theme: currentTheme }, '*')
+            break
+        }
+        return
+      }
 
-        case 'WIDGET_SEND_PROMPT':
-          inputEl.value = msg.text
-          inputEl.dispatchEvent(new Event('input'))
-          break
-
-        case 'WIDGET_OPEN_LINK':
-          window.open(msg.url, '_blank', 'noopener,noreferrer')
-          break
-
-        case 'THEME_REQUEST':
-          // Send current theme to newly loaded iframe
-          const currentTheme = htmlEl.getAttribute('data-theme') || 'dark'
-          console.log('[Theme] Iframe requested theme, responding with:', currentTheme)
-          for (const [, { iframe: f }] of widgets) {
-            if (f.contentWindow === event.source) {
-              f.contentWindow.postMessage({ type: 'THEME_CHANGE', theme: currentTheme }, '*')
+      // Check MCP UI iframes
+      for (const [tool, mcpIframe] of mcpUiIframes) {
+        if (mcpIframe.contentWindow === event.source) {
+          switch (msg.type) {
+            case 'MCP_UI_RESIZE':
+              mcpIframe.style.height = msg.height + 'px'
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  if (isNearBottom()) scrollToBottom()
+                  else notifyNewContent()
+                })
+              })
               break
-            }
+            case 'THEME_REQUEST':
+              const currentTheme = htmlEl.getAttribute('data-theme') || 'dark'
+              mcpIframe.contentWindow.postMessage({ type: 'THEME_CHANGE', theme: currentTheme }, '*')
+              break
           }
-          break
+          return
+        }
       }
     })
 

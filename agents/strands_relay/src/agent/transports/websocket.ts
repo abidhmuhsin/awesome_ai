@@ -4,7 +4,7 @@
  * Each connection gets its own agent instance for isolated sessions.
  */
 import express from 'express'
-import { createServer } from 'http'
+import { createServer as createHttpServer } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { logUsage } from '../../telemetry/openrouter-usage.js'
 import { createAgent } from '../factory.js'
@@ -13,15 +13,24 @@ import { extractText, createWidgetCache, wasByebyeCalled } from '../helpers.js'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { wsLogger as log } from '../../logger.js'
+import { readMcpResource } from '../../mcp/resource-reader.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export async function startWebSocket(port = 3000) {
   const app = express()
-  const server = createServer(app)
+  const server = createHttpServer(app)
 
   // Serve static UI files (ui/ at project root)
   const uiDir = path.resolve(__dirname, '..', '..', '..', 'ui')
+
+  // Sandbox HTML needs CSP headers — serve before static middleware
+  app.get('/sandbox.html', (_req, res) => {
+    res.setHeader('Content-Security-Policy', "default-src 'self' 'unsafe-inline' 'unsafe-eval'")
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+    res.sendFile(path.join(uiDir, 'sandbox.html'))
+  })
+
   app.use(express.static(uiDir))
 
   // Health check
@@ -66,10 +75,11 @@ export async function startWebSocket(port = 3000) {
       }))
     })
 
-    const unsubAfterToolCall = agent.addHook(AfterToolCallEvent, (event) => {
+    const unsubAfterToolCall = agent.addHook(AfterToolCallEvent, async (event) => {
       const toolId = event.toolUse.toolUseId
       const startData = toolStartMap.get(toolId)
       const duration = startData ? Date.now() - startData.startTime : 0
+      const toolName = event.toolUse.name
 
       // Extract result text from content blocks
       let resultText = ''
@@ -82,11 +92,20 @@ export async function startWebSocket(port = 3000) {
       ws.send(JSON.stringify({
         type: 'tool_end',
         id: toolId,
-        name: event.toolUse.name,
+        name: toolName,
         duration,
         status: event.error ? 'error' : 'success',
         result: resultText,
       }))
+
+      // ── Check if MCP tool has a UI resource ──────────────────────
+      // Read in-process from the long-lived MCP server (no HTTP hop).
+      const resourceUri = `ui://tools/${toolName}/html`
+      const html = await readMcpResource(resourceUri)
+      if (html) {
+        ws.send(JSON.stringify({ type: 'mcp_ui', tool: toolName, uri: resourceUri, html }))
+        log.info(`MCP UI resource found for ${toolName} (ws#${id})`)
+      }
     })
 
     ws.on('message', async (raw: Buffer) => {

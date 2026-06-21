@@ -12,17 +12,20 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js'
 import { registerHelloTool } from './tools/hello.js'
+import { registerHelloWithUiTool } from './tools/hello-with-ui.js'
 import express from 'express'
+import cors from 'cors'
 import { mcpLogger as log } from '../logger.js'
 
 // ── Create a new server with tools registered ──────────────────────────────
 
-function createServer(): McpServer {
+export function createServer(): McpServer {
   const server = new McpServer({
     name: 'visual-agent-mcp-server',
     version: '1.0.0',
   })
   registerHelloTool(server)
+  registerHelloWithUiTool(server)
   return server
 }
 
@@ -37,6 +40,9 @@ async function startStdio() {
 
 async function startHttp(port: number) {
   const app = express()
+  // CORS needed because browser-based MCP clients make cross-origin requests to this server.
+  // Restrict to localhost for development; update origin list for production.
+  app.use(cors({ origin: ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:8080'] }))
   app.use(express.json())
 
   const transports = new Map<string, StreamableHTTPServerTransport>()
