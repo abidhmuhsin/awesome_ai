@@ -741,68 +741,22 @@
       50% { opacity: 1; transform: scale(1.1); }
     }
 
-    /* Code typewriter area */
-    /* Progressively rendered widget content */
-    .widget-stream-content {
-      padding: 0;
-      background: transparent;
-      min-height: 48px;
-      position: relative;
-      overflow: hidden;
-    }
-
-    /* Blinking cursor appended after content while streaming */
-    .widget-stream-content.streaming::after {
-      content: '';
-      display: inline-block;
-      width: 0.55em;
-      height: 1.1em;
-      background: var(--accent);
-      vertical-align: text-bottom;
-      animation: cursorBlink 1s step-end infinite;
-      margin-left: 1px;
-    }
-
-    @keyframes cursorBlink {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0; }
-    }
-
-    /* Transition: remove cursor when finalized */
-    .widget-stream-card.finalized .widget-stream-content {
-      min-height: 0;
-    }
-
-    .widget-stream-card.finalized .widget-stream-content::after {
-      display: none;
-    }
-
-    .widget-stream-card.finalized .widget-wave-overlay {
-      opacity: 0;
-      pointer-events: none;
-      display: none;
-    }
-
-    /* Iframe wrapper for final render */
-    .widget-stream-iframe-wrap {
-      width: 100%;
-      display: none;
-    }
-
-    .widget-stream-card.finalized .widget-stream-iframe-wrap {
-      display: block;
-    }
-
-    .widget-stream-card.finalized .widget-stream-content {
-      display: none;
-    }
-
+    /* The streaming iframe IS the live preview surface (sandboxed from the
+       first delta). Height is driven entirely by sizeStreamIframe()
+       (collapse → measure → set), so no min-height here — it would clamp the
+       collapse step and reintroduce the feedback loop. */
     .widget-stream-iframe {
       display: block;
       width: 100%;
       border: none;
       background: transparent;
       height: 0;
+    }
+
+    .widget-stream-card.finalized .widget-wave-overlay {
+      opacity: 0;
+      pointer-events: none;
+      display: none;
     }
 
     /* ── Diagonal crop decoration ─────────────────────────────────── */
@@ -1505,8 +1459,11 @@
       if (h > 0 && h !== lastHeight) { lastHeight = h; window.parent.postMessage({ type: 'WIDGET_RESIZE', height: h }, '*') }
     }
     window.addEventListener('load', function() { applySvgCssVars(); setTimeout(reportHeight, 50) })
-    document.addEventListener('DOMContentLoaded', function() { applySvgCssVars(); reportHeight() })
-    new MutationObserver(function() { clearTimeout(window._rht); window._rht = setTimeout(reportHeight, 150) }).observe(document.body, { subtree: true, childList: true })
+    document.addEventListener('DOMContentLoaded', function() {
+      applySvgCssVars(); reportHeight()
+      // Observe from here — document.body is null while this <script> runs in <head>.
+      new MutationObserver(function() { clearTimeout(window._rht); window._rht = setTimeout(reportHeight, 150) }).observe(document.body, { subtree: true, childList: true })
+    })
   <\/script>
 </head>
 <body>
@@ -1534,6 +1491,9 @@
           rafId: null,
           pendingRender: null,
           lastRenderTime: 0,
+          iframeReady: false,
+          pendingPreview: null,
+          hasContent: false,
         }
         cards.set(toolUseId, card)
       }
@@ -1592,34 +1552,104 @@
         .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))  // \\uXXXX → char
     }
 
-    // Per-card progressive render with RAF batching (max ~60fps). All batch
-    // state lives on the card so concurrent widgets don't clobber each other.
+    // Cap the preview render rate (max once per RENDER_INTERVAL ms). Rendering
+    // on every delta rebuilds the partial HTML and reflows the iframe document,
+    // which reads as flicker as half-written tags complete; a steady cadence
+    // smooths it without losing the live feel. All batch state lives on the
+    // card so concurrent widgets don't clobber each other.
+    const RENDER_INTERVAL = 50
     function renderProgressive(card, htmlContent) {
-      const now = performance.now()
-      // If >100ms since last render, render immediately (feels responsive)
-      if (now - card.lastRenderTime > 100 || !card.pendingRender) {
-        if (card.rafId) { cancelAnimationFrame(card.rafId); card.rafId = null }
-        card.contentEl.innerHTML = htmlContent
-        card.lastRenderTime = now
-        card.pendingRender = null
-        return
-      }
-      // Otherwise, queue for next frame (batch rapid deltas)
       card.pendingRender = htmlContent
-      if (!card.rafId) {
-        card.rafId = requestAnimationFrame(() => {
-          if (card.pendingRender) {
-            card.contentEl.innerHTML = card.pendingRender
-            card.lastRenderTime = performance.now()
-            card.pendingRender = null
-          }
-          card.rafId = null
-        })
+      if (card.rafId) return
+      card.rafId = requestAnimationFrame(function tick() {
+        card.rafId = null
+        if (card.finalized) { card.pendingRender = null; return }
+        const now = performance.now()
+        if (card.lastRenderTime && now - card.lastRenderTime < RENDER_INTERVAL) {
+          card.rafId = requestAnimationFrame(tick)   // too soon — hold the latest partial
+          return
+        }
+        if (card.pendingRender) {
+          writePreview(card, card.pendingRender)
+          card.lastRenderTime = performance.now()
+          card.pendingRender = null
+        }
+      })
+    }
+
+    // Write the partial widget HTML into the sandboxed iframe's body. Buffers
+    // the latest partial until the scaffold srcdoc has loaded (contentDocument
+    // is null before load), then applies it once. innerHTML-inserted scripts
+    // don't run — that's fine for a preview; the final srcdoc at finalize runs
+    // them authoritatively.
+    function writePreview(card, htmlContent) {
+      if (card.finalized) return                   // stale render after finalize — drop it
+      if (!htmlContent || !htmlContent.trim()) return
+      const doc = card.iframe.contentDocument
+      if (card.iframeReady && doc && doc.body) {
+        doc.body.innerHTML = htmlContent
+        card.hasContent = true
+        sizeStreamIframe(card)
+      } else {
+        card.pendingPreview = htmlContent
       }
     }
 
-    // Build the streaming card DOM (header + status, progressive content area,
-    // wave overlay, hidden iframe wrapper) and attach refs to the card object.
+    // Parent-owned height sizing for stream cards. Collapse the iframe to 0
+    // FIRST so viewport-coupled content (height:100%, vh units) resolves to its
+    // true intrinsic height; measuring at the current height feeds back through
+    // the body and grows without bound. Reading scrollHeight forces one reflow
+    // at the collapsed size — no paint occurs at 0 because style changes within
+    // a tick batch until the function returns. Clamp to a min so the empty
+    // "BUILDING…" box still shows.
+    // Eased auto-scroll toward the bottom while a widget streams. Snapping
+    // scrollTop to the bottom on every render read as jerk; instead chase the
+    // (moving) bottom a fraction per frame for a smooth glide. Bails if the
+    // user scrolls away from the bottom.
+    let scrollEaseRaf = null
+    let prevEaseTop = -1
+    function scheduleScrollEase() {
+      if (scrollEaseRaf !== null) return
+      scrollEaseRaf = requestAnimationFrame(function easeStep() {
+        scrollEaseRaf = null
+        const target = chatEl.scrollHeight - chatEl.clientHeight
+        const cur = chatEl.scrollTop
+        // The ease only ever increases scrollTop (scrolling toward the bottom).
+        // If scrollTop decreased since the last step, the user scrolled up —
+        // stop following. The earlier !isNearBottom() check was wrong: it bailed
+        // whenever content growth pushed the gap past 120px, which killed follow.
+        if (prevEaseTop >= 0 && cur < prevEaseTop - 2) { prevEaseTop = -1; return }
+        const remaining = target - cur
+        if (remaining <= 1) { chatEl.scrollTop = target; prevEaseTop = target; return }
+        chatEl.scrollTop = cur + remaining * 0.4
+        prevEaseTop = chatEl.scrollTop
+        scheduleScrollEase()
+      })
+    }
+
+    function sizeStreamIframe(card) {
+      const doc = card.iframe.contentDocument
+      if (!doc || !doc.body) return
+      // Save scroll state: the collapse below changes the chat's scrollHeight
+      // mid-tick, which lets the browser clamp scrollTop away from where it
+      // was (yanking the view toward the top). We restore it after.
+      const wasNearBottom = isNearBottom()
+      const prevScrollTop = chatEl.scrollTop
+
+      card.iframe.style.height = '0px'
+      const h = doc.body.scrollHeight || doc.body.offsetHeight || 0
+      const min = card.finalized ? 0 : 48
+      card.iframe.style.height = Math.max(h, min) + 'px'
+
+      // Undo the mid-tick clamp (hold the exact prior position), then glide
+      // smoothly toward the new bottom instead of snapping every frame. All
+      // synchronous, so no paint ever occurs at height 0.
+      chatEl.scrollTop = prevScrollTop
+      if (wasNearBottom) scheduleScrollEase()
+    }
+
+    // Build the streaming card DOM (header + status, the sandboxed preview
+    // iframe, wave overlay) and attach refs to the card object.
     function buildStreamCardDom(card) {
       const cardEl = document.createElement('div')
       cardEl.classList.add('widget-stream-card')
@@ -1638,11 +1668,19 @@
       header.appendChild(status)
       cardEl.appendChild(header)
 
-      const contentEl = document.createElement('div')
-      contentEl.classList.add('widget-stream-content', 'streaming')
-      cardEl.appendChild(contentEl)
+      // The iframe is the live preview surface — sandboxed from the first
+      // delta. Partial widget HTML is written to its body during streaming; the
+      // authoritative final render (scripts running) is set via srcdoc in
+      // finalizeCard. The empty scaffold is loaded once up front.
+      const iframe = document.createElement('iframe')
+      iframe.title = 'widget: ' + card.title
+      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
+      iframe.allow = 'fullscreen *; clipboard-write *'
+      iframe.classList.add('widget-stream-iframe')
+      cardEl.appendChild(iframe)
 
-      // Wave overlay — sibling of contentEl (innerHTML would destroy a child)
+      // Wave overlay — sibling on top of the streaming iframe while building.
+      // A sibling (not a child) so re-rendering the iframe body never destroys it.
       const waveOverlay = document.createElement('div')
       waveOverlay.classList.add('widget-wave-overlay')
       waveOverlay.innerHTML = `
@@ -1652,26 +1690,30 @@
       `
       cardEl.appendChild(waveOverlay)
 
-      // Iframe wrapper for the final sandboxed render (hidden until finalize)
-      const iframeWrap = document.createElement('div')
-      iframeWrap.classList.add('widget-stream-iframe-wrap')
-
-      const iframe = document.createElement('iframe')
-      iframe.title = 'widget: ' + card.title
-      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
-      iframe.allow = 'fullscreen *; clipboard-write *'
-      iframe.classList.add('widget-stream-iframe')
-      iframeWrap.appendChild(iframe)
-      cardEl.appendChild(iframeWrap)
-
       chatEl.appendChild(cardEl)
 
       card.card = cardEl
-      card.contentEl = contentEl
       card.iframe = iframe
-      card.iframeWrap = iframeWrap
       card.status = status
       card.waveOverlay = waveOverlay
+      card.iframeReady = false
+      card.pendingPreview = null
+      card.hasContent = false
+
+      // Buffer any preview that arrives before the scaffold loads, then apply.
+      // On a plain load (empty scaffold, or the finalize srcdoc reload) size
+      // directly — the parent owns stream-card height.
+      iframe.addEventListener('load', () => {
+        card.iframeReady = true
+        if (!card.finalized && card.pendingPreview != null) {
+          const pending = card.pendingPreview
+          card.pendingPreview = null
+          writePreview(card, pending)
+        } else {
+          sizeStreamIframe(card)
+        }
+      })
+      iframe.srcdoc = buildIframePage('')
 
       if (isNearBottom()) scrollToBottom()
       else notifyNewContent()
@@ -1686,12 +1728,14 @@
         card = {
           kind: 'stream', toolUseId, title: 'widget', accumulatedJson: '',
           finalized: false, rafId: null, pendingRender: null, lastRenderTime: 0,
+          iframeReady: false, pendingPreview: null, hasContent: false,
         }
         cards.set(toolUseId, card)
         buildStreamCardDom(card)
       }
       if (card.finalized) return
       card.finalized = true
+      card.pendingPreview = null   // srcdoc below is authoritative; don't let the load handler reapply a buffered preview
       finalizedTools.add(toolUseId)
 
       if (card.waveOverlay) card.waveOverlay.classList.add('hidden')
@@ -1714,7 +1758,7 @@
         if (card.waveOverlay) card.waveOverlay.classList.add('hidden')
         if (card.status) card.status.innerHTML = '<span class="stream-dot" style="background:#ef4444"></span> INCOMPLETE'
         card.card.classList.add('finalized')
-        if (!card.contentEl || !card.contentEl.innerHTML.trim()) {
+        if (!card.hasContent) {
           card.card.style.display = 'none'
         }
       }
@@ -1810,6 +1854,10 @@
       switch (msg.type) {
         case 'WIDGET_RESIZE':
         case 'MCP_UI_RESIZE':
+          // Stream cards are sized by the parent (sizeStreamIframe) — ignore
+          // the scaffold's own reports, which measure at the live height and
+          // can feed back. Static proxy cards still size from these messages.
+          if (card.kind === 'stream') break
           card.iframe.style.height = msg.height + 'px'
           if (card.placeholder) card.placeholder.classList.add('loaded')
           requestAnimationFrame(() => {
