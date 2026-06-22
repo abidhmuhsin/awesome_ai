@@ -9,7 +9,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { logUsage } from '../../telemetry/openrouter-usage.js'
 import { createAgent } from '../factory.js'
 import { BeforeToolCallEvent, AfterToolCallEvent } from '@strands-agents/sdk'
-import { extractText, createWidgetCache, wasByebyeCalled } from '../helpers.js'
+import { extractText, wasByebyeCalled } from '../helpers.js'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { wsLogger as log } from '../../logger.js'
@@ -48,7 +48,6 @@ export async function startWebSocket(port = 3000) {
   wss.on('connection', (ws: WebSocket) => {
     const id = ++connId
     const agent = createAgent()
-    const widgetCache = createWidgetCache()
     log.connection('connected', `client #${id} | Total clients: ${wss.clients.size}`)
 
     ws.send(JSON.stringify({ type: 'system', text: 'Connected to agent. Say hello!' }))
@@ -98,13 +97,33 @@ export async function startWebSocket(port = 3000) {
         result: resultText,
       }))
 
-      // ── Check if MCP tool has a UI resource ──────────────────────
-      // Read in-process from the long-lived MCP server (no HTTP hop).
-      const resourceUri = `ui://tools/${toolName}/html`
-      const html = await readMcpResource(resourceUri)
-      if (html) {
-        ws.send(JSON.stringify({ type: 'mcp_ui', tool: toolName, uri: resourceUri, html }))
-        log.info(`MCP UI resource found for ${toolName} (ws#${id})`)
+      // ── Deliver the tool's UI ──────────────────────────────────────
+      // Generator tools (widget_renderer): the HTML is the model-generated
+      // `widget_code` arg — already streamed to the client as tool_input_delta.
+      // Send an authoritative finalize so the client swaps preview → sandbox.
+      // Static-UI tools: read the HTML from the ui://tools/<name>/html resource
+      // in-process (no HTTP hop); rendered client-side with no streaming.
+      const toolUseId = event.toolUse.toolUseId
+      if (toolName === 'widget_renderer') {
+        const input = event.toolUse.input as { title?: string; widget_code?: string }
+        if (input?.widget_code) {
+          ws.send(JSON.stringify({
+            type: 'mcp_ui',
+            toolUseId,
+            tool: toolName,
+            title: input.title ?? toolName,
+            html: input.widget_code,
+            fullDoc: false,
+            streamFinal: true,
+          }))
+        }
+      } else {
+        const resourceUri = `ui://tools/${toolName}/html`
+        const html = await readMcpResource(resourceUri)
+        if (html) {
+          ws.send(JSON.stringify({ type: 'mcp_ui', toolUseId, tool: toolName, html, fullDoc: true }))
+          log.info(`MCP UI resource found for ${toolName} (ws#${id})`)
+        }
       }
     })
 
@@ -123,13 +142,29 @@ export async function startWebSocket(port = 3000) {
         // ── Stream agent response ──────────────────────────────────
         let fullReply = ''
         let streamStarted = false
+        // Active toolUse whose input the model is currently generating.
+        // contentBlockIndex is not populated by the OpenAI chat adapter, so we
+        // correlate tool-input deltas by "most recent toolUseStart" — cleared on
+        // toolUseStop — matching the SDK's own single-accumulator model.
+        // NOTE: if the provider interleaves two tools' input deltas in one turn,
+        // this (like the SDK's own aggregation) misattributes them; concurrent
+        // widget streaming is therefore best-effort. The Responses API would
+        // collapse all tool input into a single delta, ending progressive render.
+        let activeToolUse: { id: string; name: string } | null = null
 
         for await (const event of agent.stream(text)) {
           switch (event.type) {
             case 'modelStreamUpdateEvent': {
-              // Handle streaming text deltas
+              // Handle streaming model events (block start/delta/stop)
               const delta = event.event
-              if (delta.type === 'modelContentBlockDeltaEvent') {
+              if (delta.type === 'modelContentBlockStartEvent') {
+                const start = (delta as any).start
+                if (start && start.type === 'toolUseStart') {
+                  activeToolUse = { id: start.toolUseId, name: start.name }
+                }
+              } else if (delta.type === 'modelContentBlockStopEvent') {
+                activeToolUse = null
+              } else if (delta.type === 'modelContentBlockDeltaEvent') {
                 const contentDelta = delta.delta
                 if (contentDelta.type === 'textDelta') {
                   if (!streamStarted) {
@@ -139,13 +174,18 @@ export async function startWebSocket(port = 3000) {
                   fullReply += contentDelta.text
                   ws.send(JSON.stringify({ type: 'agent_stream_delta', text: contentDelta.text }))
                 }
-                // Stream widget_renderer tool input as it's generated
+                // Stream widget_renderer (and any generator) tool input as it's
+                // generated, tagged with the active toolUse so the client can
+                // route it to the right progressive-render card.
                 else if (contentDelta.type === 'toolUseInputDelta') {
-                  // Forward raw tool input delta to client for early rendering
-                  ws.send(JSON.stringify({
-                    type: 'tool_input_delta',
-                    delta: contentDelta.input,
-                  }))
+                  if (activeToolUse) {
+                    ws.send(JSON.stringify({
+                      type: 'tool_input_delta',
+                      toolUseId: activeToolUse.id,
+                      tool: activeToolUse.name,
+                      delta: contentDelta.input,
+                    }))
+                  }
                 }
               }
               break
@@ -183,12 +223,6 @@ export async function startWebSocket(port = 3000) {
           // No streaming occurred (e.g., tool-only response)
           const reply = extractText(agent) ?? '(no response)'
           ws.send(JSON.stringify({ type: 'agent', text: reply }))
-        }
-
-        // Check if the agent produced any new widgets
-        const widgets = widgetCache.extractWidgets(agent)
-        for (const widget of widgets) {
-          ws.send(JSON.stringify({ type: 'widget', title: widget.title, widget_code: widget.widget_code }))
         }
 
         log.outgoing(`ws#${id}`, fullReply || '(streamed)', responseTime)

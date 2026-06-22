@@ -1097,10 +1097,10 @@
     themeBtn.addEventListener('click', () => {
       const current = htmlEl.getAttribute('data-theme')
       setTheme(current !== 'dark')
-      // Sync theme to all widget iframes
+      // Sync theme to all tool-UI card iframes (scaffold + proxy)
       const theme = htmlEl.getAttribute('data-theme')
-      console.log('[Theme] User toggled to:', theme, '| Syncing to', widgets.size, 'iframe(s)')
-      for (const [, { iframe }] of widgets) {
+      console.log('[Theme] User toggled to:', theme, '| Syncing to', cards.size, 'card(s)')
+      for (const [, { iframe }] of cards) {
         try {
           iframe.contentWindow.postMessage({ type: 'THEME_CHANGE', theme }, '*')
         } catch (e) {
@@ -1237,45 +1237,47 @@
           return
         }
 
-        // Handle raw tool input deltas (STREAMING widget renderer)
+        // Stream generator-tool (widget_renderer) input as it's generated,
+        // tagged with toolUseId so the client routes it to the right card.
         if (msg.type === 'tool_input_delta') {
-          appendStreamingDelta(msg.delta)
+          if (msg.toolUseId) streamDelta(msg.toolUseId, msg.delta)
           return
         }
 
         // Handle tool stream updates (optional progress data)
         if (msg.type === 'tool_stream_update') {
-          // Could display tool progress if needed
           return
         }
 
         // Show typing indicator when agent starts processing
         if (msg.type === 'typing') {
           showTyping()
-          // Reset streaming widget state for new message
-          if (activeStreamWidget) {
-            finalizeStreamingWidget(activeStreamWidget, streamWidgetTitle)
-            activeStreamWidget = null
-            streamWidgetCode = ''
-            streamWidgetTitle = ''
-          }
+          // New turn: clean up any streaming card orphaned from the prior turn
+          // (e.g. its mcp_ui finalize never arrived). Rendered partials stay.
+          abortStreamingCards()
           return
         }
 
         removeTyping()
 
-        if (msg.type === 'widget') {
-          // Skip if already rendered via streaming
-          if (streamedWidgetTitles.has(msg.title)) {
-            streamedWidgetTitles.delete(msg.title)  // Clean up
-            return
-          }
-          appendWidget(msg.title, msg.widget_code)
-        } else if (msg.type === 'mcp_ui') {
-          appendMcpUi(msg.tool, msg.html)
-        } else {
-          appendMessage(msg.type, msg.text)
+        // Tool UI delivery. Generator tools (widget_renderer) arrive with
+        // streamFinal=true as an authoritative finalize of the streaming preview;
+        // static-UI tools arrive without it and render through the proxy.
+        if (msg.type === 'mcp_ui') {
+          if (msg.streamFinal) finalizeCard(msg.toolUseId, msg.html)
+          else renderStaticCard(msg.toolUseId, msg.tool, msg.html)
+          return
         }
+
+        // A stream error (e.g. malformed tool JSON) aborts mid-turn — finalize
+        // any open streaming card before showing the error.
+        if (msg.type === 'error') {
+          abortStreamingCards()
+          appendMessage('error', msg.text)
+          return
+        }
+
+        appendMessage(msg.type, msg.text)
       })
     }
 
@@ -1427,8 +1429,15 @@
     }
 
     // ── Widget Manager ──────────────────────────────────────────────
-    const widgets = new Map()
-    let widgetCounter = 0
+    // ── Unified Tool-UI Renderer ──────────────────────────────────────
+    // One pipeline for generator tools (widget_renderer: model-generated HTML
+    // streamed via tool_input_delta, previewed, then finalized into a sandboxed
+    // scaffold iframe by an authoritative mcp_ui{streamFinal}) and static-UI
+    // tools (a ui://tools/<name>/html resource rendered through the nested
+    // proxy in sandbox.js). All cards live in one map keyed by toolUseId; one
+    // message router handles resize/theme/bridges for both.
+    const cards = new Map()           // toolUseId -> card state
+    const finalizedTools = new Set()  // toolUseIds already rendered (cross-turn dedup)
 
     // Shared iframe page builder (used by both renderers)
     function buildIframePage(widgetCode) {
@@ -1506,81 +1515,45 @@
 </html>`
     }
 
-    // ── NON-STREAMING Widget Renderer (existing behavior) ──────────
-    // Renders widget after agent completes (for widget_renderer tool)
-    function appendWidget(title, widgetCode) {
-      const id = 'w_' + (++widgetCounter)
+    // ── Streaming generator-tool cards (widget_renderer) ────────────
+    // streamDelta() runs on every tool_input_delta for a generator tool. It
+    // lazily creates a progressive-render card (once the title parses), decodes
+    // the partial HTML, and renders it as a live preview. The final sandboxed
+    // render happens ONLY in finalizeCard() on the authoritative mcp_ui
+    // {streamFinal} message — never from a client-side closing-quote heuristic.
 
-      const card = document.createElement('div')
-      card.classList.add('widget-card')
+    function streamDelta(toolUseId, delta) {
+      let card = cards.get(toolUseId)
+      if (!card) {
+        card = {
+          kind: 'stream',
+          toolUseId,
+          title: null,
+          accumulatedJson: '',
+          finalized: false,
+          rafId: null,
+          pendingRender: null,
+          lastRenderTime: 0,
+        }
+        cards.set(toolUseId, card)
+      }
+      if (card.finalized) return  // ignore late deltas after finalize
 
-      const titleEl = document.createElement('div')
-      titleEl.classList.add('widget-title')
-      titleEl.textContent = title
-      card.appendChild(titleEl)
+      card.accumulatedJson += delta
 
-      const placeholder = document.createElement('div')
-      placeholder.classList.add('widget-placeholder')
-      card.appendChild(placeholder)
-
-      const iframe = document.createElement('iframe')
-      iframe.title = 'widget: ' + title
-      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
-      iframe.allow = 'fullscreen *; clipboard-write *'
-      iframe.classList.add('widget-iframe')
-      iframe.srcdoc = buildIframePage(widgetCode)
-      card.appendChild(iframe)
-
-      widgets.set(id, { iframe, placeholder })
-      chatEl.appendChild(card)
-      if (isNearBottom()) scrollToBottom()
-      else notifyNewContent()
-    }
-
-    // ── STREAMING Widget Renderer (progressive HTML rendering) ──────
-    // Renders widget sections in real-time as HTML is generated
-
-    let activeStreamWidget = null  // Currently streaming widget (null if none)
-    let streamWidgetCode = ''      // Accumulated widget code so far
-    let streamWidgetTitle = ''     // Widget title (extracted from first deltas)
-    const streamedWidgetTitles = new Set()  // Track titles rendered via streaming
-
-    /**
-     * Called on every tool_input_delta message.
-     * Extracts HTML from JSON, progressively renders each section as it arrives.
-     */
-    function appendStreamingDelta(delta) {
-      streamWidgetCode += delta
-
-      // ── Extract title early for the header ──────────────────────
-      const titleMatch = streamWidgetCode.match(/"title"\s*:\s*"([^"]*?)"/)
-      const title = titleMatch ? titleMatch[1] : null
-
-      // ── Create streaming card on first delta ────────────────────
-      if (!activeStreamWidget && title) {
-        activeStreamWidget = createStreamingWidget(title)
-        streamWidgetTitle = title
+      // Create the card DOM once a title is available
+      if (!card.card) {
+        const titleMatch = card.accumulatedJson.match(/"title"\s*:\s*"([^"]*?)"/)
+        if (titleMatch) {
+          card.title = titleMatch[1]
+          buildStreamCardDom(card)
+        }
       }
 
-      // ── If we have an active streaming widget, progressively render ──
-      if (activeStreamWidget) {
-        // Extract partial HTML from widget_code
-        const htmlContent = extractWidgetCodePartial(streamWidgetCode)
-
-        if (htmlContent) {
-          // Decode JSON escapes for rendering
-          const decoded = decodeJsonString(htmlContent)
-          // Render progressively in the content div
-          renderProgressiveHTML(activeStreamWidget.contentEl, decoded)
-        }
-
-        // ── Check if widget_code is COMPLETE (closing quote found) ──
-        if (isWidgetCodeComplete(streamWidgetCode)) {
-          finalizeStreamingWidget(activeStreamWidget, streamWidgetTitle)
-          activeStreamWidget = null
-          streamWidgetCode = ''
-          streamWidgetTitle = ''
-        }
+      // Progressive preview from the partial widget_code
+      if (card.card) {
+        const htmlContent = extractWidgetCodePartial(card.accumulatedJson)
+        if (htmlContent) renderProgressive(card, decodeJsonString(htmlContent))
       }
 
       if (isNearBottom()) scrollToBottom()
@@ -1619,102 +1592,57 @@
         .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))  // \\uXXXX → char
     }
 
-    /**
-     * Progressively render HTML into the content div.
-     * Uses requestAnimationFrame to batch rapid updates (max ~60fps).
-     * Still renders immediately on first call or after a pause.
-     */
-    let _rafId = null
-    let _pendingRender = null
-    let _lastRenderTime = 0
-    function renderProgressiveHTML(container, htmlContent) {
+    // Per-card progressive render with RAF batching (max ~60fps). All batch
+    // state lives on the card so concurrent widgets don't clobber each other.
+    function renderProgressive(card, htmlContent) {
       const now = performance.now()
       // If >100ms since last render, render immediately (feels responsive)
-      if (now - _lastRenderTime > 100 || !_pendingRender) {
-        // Cancel any pending RAF
-        if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null }
-        container.innerHTML = htmlContent
-        _lastRenderTime = now
-        _pendingRender = null
+      if (now - card.lastRenderTime > 100 || !card.pendingRender) {
+        if (card.rafId) { cancelAnimationFrame(card.rafId); card.rafId = null }
+        card.contentEl.innerHTML = htmlContent
+        card.lastRenderTime = now
+        card.pendingRender = null
         return
       }
       // Otherwise, queue for next frame (batch rapid deltas)
-      _pendingRender = { container, html: htmlContent }
-      if (!_rafId) {
-        _rafId = requestAnimationFrame(() => {
-          if (_pendingRender) {
-            _pendingRender.container.innerHTML = _pendingRender.html
-            _lastRenderTime = performance.now()
-            _pendingRender = null
+      card.pendingRender = htmlContent
+      if (!card.rafId) {
+        card.rafId = requestAnimationFrame(() => {
+          if (card.pendingRender) {
+            card.contentEl.innerHTML = card.pendingRender
+            card.lastRenderTime = performance.now()
+            card.pendingRender = null
           }
-          _rafId = null
+          card.rafId = null
         })
       }
     }
 
-    /**
-     * Check if the widget_code string is complete in the accumulated JSON.
-     * Looks for the closing quote of the widget_code value.
-     */
-    function isWidgetCodeComplete(json) {
-      const keyIdx = json.indexOf('"widget_code"')
-      if (keyIdx === -1) return false
+    // Build the streaming card DOM (header + status, progressive content area,
+    // wave overlay, hidden iframe wrapper) and attach refs to the card object.
+    function buildStreamCardDom(card) {
+      const cardEl = document.createElement('div')
+      cardEl.classList.add('widget-stream-card')
 
-      const afterKey = json.substring(keyIdx + 13)
-      const colonIdx = afterKey.indexOf(':')
-      if (colonIdx === -1) return false
-
-      const afterColon = afterKey.substring(colonIdx + 1)
-      const quoteIdx = afterColon.indexOf('"')
-      if (quoteIdx === -1) return false
-
-      // Walk through string, tracking escapes, to find closing quote
-      let i = quoteIdx + 1
-      let escaped = false
-      while (i < afterColon.length) {
-        const ch = afterColon[i]
-        if (escaped) {
-          escaped = false
-        } else if (ch === '\\') {
-          escaped = true
-        } else if (ch === '"') {
-          return true  // Found the closing quote!
-        }
-        i++
-      }
-      return false  // Still streaming...
-    }
-
-    /**
-     * Create the streaming widget card with header + progressive content area.
-     * Returns an object with references to update later.
-     */
-    function createStreamingWidget(title) {
-      const card = document.createElement('div')
-      card.classList.add('widget-stream-card')
-
-      // Header
       const header = document.createElement('div')
       header.classList.add('widget-stream-header')
 
       const label = document.createElement('span')
       label.classList.add('stream-label')
-      label.textContent = title
+      label.textContent = card.title
       header.appendChild(label)
 
       const status = document.createElement('span')
       status.classList.add('stream-status')
       status.innerHTML = '<span class="stream-dot"></span> BUILDING...'
       header.appendChild(status)
+      cardEl.appendChild(header)
 
-      card.appendChild(header)
-
-      // Progressive content area (rendered HTML)
       const contentEl = document.createElement('div')
       contentEl.classList.add('widget-stream-content', 'streaming')
-      card.appendChild(contentEl)
+      cardEl.appendChild(contentEl)
 
-      // Wave overlay — sibling of contentEl, not child (innerHTML would destroy it)
+      // Wave overlay — sibling of contentEl (innerHTML would destroy a child)
       const waveOverlay = document.createElement('div')
       waveOverlay.classList.add('widget-wave-overlay')
       waveOverlay.innerHTML = `
@@ -1722,91 +1650,89 @@
         <div class="shimmer-bar"></div>
         <span class="wave-loading-text">Building</span>
       `
-      card.appendChild(waveOverlay)
+      cardEl.appendChild(waveOverlay)
 
-      // Iframe wrapper for final render (hidden initially)
+      // Iframe wrapper for the final sandboxed render (hidden until finalize)
       const iframeWrap = document.createElement('div')
       iframeWrap.classList.add('widget-stream-iframe-wrap')
 
       const iframe = document.createElement('iframe')
-      iframe.title = 'widget: ' + title
+      iframe.title = 'widget: ' + card.title
       iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
       iframe.allow = 'fullscreen *; clipboard-write *'
       iframe.classList.add('widget-stream-iframe')
       iframeWrap.appendChild(iframe)
+      cardEl.appendChild(iframeWrap)
 
-      card.appendChild(iframeWrap)
-      chatEl.appendChild(card)
+      chatEl.appendChild(cardEl)
+
+      card.card = cardEl
+      card.contentEl = contentEl
+      card.iframe = iframe
+      card.iframeWrap = iframeWrap
+      card.status = status
+      card.waveOverlay = waveOverlay
+
       if (isNearBottom()) scrollToBottom()
       else notifyNewContent()
-
-      return { card, contentEl, iframe, iframeWrap, status }
     }
 
-    /**
-     * Finalize the streaming widget: render final HTML, transition to iframe.
-     */
-    function finalizeStreamingWidget(stream, title) {
-      // Guard: already finalized
-      if (stream.card.classList.contains('finalized')) return
-      // Hide wave overlay
-      const overlay = stream.card.querySelector('.widget-wave-overlay')
-      if (overlay) overlay.classList.add('hidden')
-
-      // Extract final widget_code from accumulated JSON
-      const codeStart = streamWidgetCode.indexOf('"widget_code"')
-      const afterKey = streamWidgetCode.substring(codeStart + 13)
-      const colonIdx = afterKey.indexOf(':')
-      const afterColon = afterKey.substring(colonIdx + 1)
-      const quoteIdx = afterColon.indexOf('"')
-
-      // Walk to find closing quote, extracting the real content
-      let widgetCode = ''
-      let i = quoteIdx + 1
-      let escaped = false
-      while (i < afterColon.length) {
-        const ch = afterColon[i]
-        if (escaped) {
-          escaped = false
-          switch (ch) {
-            case 'n': widgetCode += '\n'; break
-            case 't': widgetCode += '\t'; break
-            case '"': widgetCode += '"'; break
-            case '\\': widgetCode += '\\'; break
-            default: widgetCode += ch; break
-          }
-        } else if (ch === '\\') {
-          escaped = true
-        } else if (ch === '"') {
-          break  // End of string
-        } else {
-          widgetCode += ch
+    // Authoritative finalize: swap the progressive preview for the sandboxed
+    // scaffold iframe. Idempotent on toolUseId. If no streaming card was ever
+    // created (e.g. deltas never carried a title), build one first, then swap.
+    function finalizeCard(toolUseId, html) {
+      let card = cards.get(toolUseId)
+      if (!card) {
+        card = {
+          kind: 'stream', toolUseId, title: 'widget', accumulatedJson: '',
+          finalized: false, rafId: null, pendingRender: null, lastRenderTime: 0,
         }
-        i++
+        cards.set(toolUseId, card)
+        buildStreamCardDom(card)
       }
+      if (card.finalized) return
+      card.finalized = true
+      finalizedTools.add(toolUseId)
 
-      // Update header status
-      stream.status.innerHTML = '<span class="stream-dot" style="background:#22c55e"></span> DONE'
+      if (card.waveOverlay) card.waveOverlay.classList.add('hidden')
+      if (card.status) card.status.innerHTML = '<span class="stream-dot" style="background:#22c55e"></span> DONE'
+      if (card.card) card.card.classList.add('finalized')
 
-      // Hide progressive content, show iframe
-      stream.card.classList.add('finalized')
+      card.iframe.srcdoc = buildIframePage(html)
 
-      // Render final HTML into iframe for proper sandboxing
-      const id = 'w_' + (++widgetCounter)
-      stream.iframe.srcdoc = buildIframePage(widgetCode)
-      widgets.set(id, { iframe: stream.iframe, placeholder: null })
-
-      // Track this title so we don't duplicate via non-streaming renderer
-      streamedWidgetTitles.add(title)
+      if (isNearBottom()) scrollToBottom()
+      else notifyNewContent()
     }
 
-    // ── MCP UI Renderer ──────────────────────────────────────────────
-    // Loads MCP tool UI resources in sandbox iframes within the chat
-    const mcpUiIframes = new Map()  // track MCP UI iframes by tool name
+    // Finalize-or-hide streaming cards left open by an aborted turn (stream
+    // error) or an orphaned prior turn (new typing). Rendered partials stay;
+    // empty cards are hidden so they don't hang on "BUILDING…".
+    function abortStreamingCards() {
+      for (const [, card] of cards) {
+        if (card.kind !== 'stream' || card.finalized || !card.card) continue
+        card.finalized = true
+        if (card.waveOverlay) card.waveOverlay.classList.add('hidden')
+        if (card.status) card.status.innerHTML = '<span class="stream-dot" style="background:#ef4444"></span> INCOMPLETE'
+        card.card.classList.add('finalized')
+        if (!card.contentEl || !card.contentEl.innerHTML.trim()) {
+          card.card.style.display = 'none'
+        }
+      }
+    }
 
-    function appendMcpUi(toolName, html) {
-      const card = document.createElement('div')
-      card.classList.add('mcp-ui-card')
+    // ── Static-UI cards (proxy path) ─────────────────────────────────
+    // Static-UI tools (ui://tools/<name>/html) are full HTML docs rendered
+    // through the nested proxy (sandbox.html + sandbox.js), which measures the
+    // inner content's height non-cooperatively and relays MCP_UI_RESIZE.
+    const MCP_RESOURCE_READY = 'ui/notifications/sandbox-resource-ready'
+    const MCP_PROXY_READY = 'ui/notifications/sandbox-proxy-ready'
+
+    function renderStaticCard(toolUseId, tool, html) {
+      if (finalizedTools.has(toolUseId)) return  // cross-turn dedup
+      finalizedTools.add(toolUseId)
+
+      const cardEl = document.createElement('div')
+      cardEl.classList.add('mcp-ui-card')
 
       const header = document.createElement('div')
       header.classList.add('mcp-ui-header')
@@ -1818,127 +1744,92 @@
 
       const toolLabel = document.createElement('span')
       toolLabel.classList.add('mcp-ui-tool')
-      toolLabel.textContent = toolName
+      toolLabel.textContent = tool
       header.appendChild(toolLabel)
 
-      card.appendChild(header)
+      cardEl.appendChild(header)
 
-      // Sandbox proxy iframe for secure rendering
       const iframe = document.createElement('iframe')
-      iframe.title = 'mcp-ui: ' + toolName
+      iframe.title = 'mcp-ui: ' + tool
       iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
       iframe.classList.add('mcp-ui-sandbox')
-      card.appendChild(iframe)
+      cardEl.appendChild(iframe)
 
-      chatEl.appendChild(card)
-      mcpUiIframes.set(toolName, iframe)
+      chatEl.appendChild(cardEl)
+      cards.set(toolUseId, { kind: 'static', toolUseId, card: cardEl, iframe, finalized: true })
 
-      // Load sandbox and send HTML content via postMessage
       loadMcpSandbox(iframe, html)
 
       if (isNearBottom()) scrollToBottom()
       else notifyNewContent()
     }
 
-    const MCP_RESOURCE_READY = 'ui/notifications/sandbox-resource-ready'
-    const MCP_PROXY_READY = 'ui/notifications/sandbox-proxy-ready'
-    let pendingMcpHtml = null
-    let pendingMcpIframe = null
-
+    // Load the proxy and hand it the HTML once it signals ready.
     function loadMcpSandbox(iframe, html) {
-      pendingMcpHtml = html
-      pendingMcpIframe = iframe
-
+      let settled = false
       const listener = (event) => {
         if (event.source === iframe.contentWindow && event.data?.method === MCP_PROXY_READY) {
+          if (settled) return
+          settled = true
           window.removeEventListener('message', listener)
-          // Send HTML to sandbox
           iframe.contentWindow.postMessage({
             jsonrpc: '2.0',
             method: MCP_RESOURCE_READY,
-            params: { html }
+            params: { html },
           }, '*')
-          pendingMcpHtml = null
-          pendingMcpIframe = null
         }
       }
       window.addEventListener('message', listener)
+      iframe.src = '/sandbox.html'
 
-      // Timeout fallback: load directly if sandbox doesn't respond
+      // Safety net: if the proxy never handshakes, show a safe in-sandbox error.
+      // The sandbox attribute is NEVER removed — the old fallback stripped it
+      // and loaded the HTML raw, which was a real escape hatch.
       setTimeout(() => {
-        if (pendingMcpHtml === html) {
+        if (!settled) {
           window.removeEventListener('message', listener)
-          iframe.removeAttribute('sandbox')
-          iframe.srcdoc = html
-          pendingMcpHtml = null
-          pendingMcpIframe = null
+          iframe.srcdoc = '<body style="margin:0;padding:14px;font-family:system-ui;color:#888;font-size:13px;">Tool UI failed to load.</body>'
+          console.warn('[mcp-ui] proxy handshake timed out for', iframe.title)
         }
       }, 3000)
-
-      iframe.src = '/sandbox.html'
     }
 
-    // ── Widget + MCP UI message handler ─────────────────────────────
+    // ── Unified message router (scaffold + proxy cards) ──────────────
     window.addEventListener('message', (event) => {
       const msg = event.data
       if (!msg || !msg.type) return
 
-      // Check widget iframes
-      let widgetId = null
-      for (const [id, { iframe }] of widgets) {
-        if (iframe.contentWindow === event.source) {
-          widgetId = id
-          break
-        }
+      // Find the card (streaming scaffold iframe or static proxy iframe) whose
+      // contentWindow sent this message.
+      let card = null
+      for (const [, c] of cards) {
+        if (c.iframe && c.iframe.contentWindow === event.source) { card = c; break }
       }
+      if (!card) return
 
-      if (widgetId) {
-        const { iframe, placeholder } = widgets.get(widgetId)
-        switch (msg.type) {
-          case 'WIDGET_RESIZE':
-            iframe.style.height = msg.height + 'px'
-            if (placeholder) placeholder.classList.add('loaded')
+      switch (msg.type) {
+        case 'WIDGET_RESIZE':
+        case 'MCP_UI_RESIZE':
+          card.iframe.style.height = msg.height + 'px'
+          if (card.placeholder) card.placeholder.classList.add('loaded')
+          requestAnimationFrame(() => {
             requestAnimationFrame(() => {
-              requestAnimationFrame(() => {
-                if (isNearBottom()) scrollToBottom()
-                else notifyNewContent()
-              })
+              if (isNearBottom()) scrollToBottom()
+              else notifyNewContent()
             })
-            break
-          case 'WIDGET_SEND_PROMPT':
-            inputEl.value = msg.text
-            inputEl.dispatchEvent(new Event('input'))
-            break
-          case 'WIDGET_OPEN_LINK':
-            window.open(msg.url, '_blank', 'noopener,noreferrer')
-            break
-          case 'THEME_REQUEST':
-            const currentTheme = htmlEl.getAttribute('data-theme') || 'dark'
-            iframe.contentWindow.postMessage({ type: 'THEME_CHANGE', theme: currentTheme }, '*')
-            break
-        }
-        return
-      }
-
-      // Check MCP UI iframes
-      for (const [tool, mcpIframe] of mcpUiIframes) {
-        if (mcpIframe.contentWindow === event.source) {
-          switch (msg.type) {
-            case 'MCP_UI_RESIZE':
-              mcpIframe.style.height = msg.height + 'px'
-              requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                  if (isNearBottom()) scrollToBottom()
-                  else notifyNewContent()
-                })
-              })
-              break
-            case 'THEME_REQUEST':
-              const currentTheme = htmlEl.getAttribute('data-theme') || 'dark'
-              mcpIframe.contentWindow.postMessage({ type: 'THEME_CHANGE', theme: currentTheme }, '*')
-              break
-          }
-          return
+          })
+          break
+        case 'WIDGET_SEND_PROMPT':
+          inputEl.value = msg.text
+          inputEl.dispatchEvent(new Event('input'))
+          break
+        case 'WIDGET_OPEN_LINK':
+          window.open(msg.url, '_blank', 'noopener,noreferrer')
+          break
+        case 'THEME_REQUEST': {
+          const currentTheme = htmlEl.getAttribute('data-theme') || 'dark'
+          card.iframe.contentWindow.postMessage({ type: 'THEME_CHANGE', theme: currentTheme }, '*')
+          break
         }
       }
     })

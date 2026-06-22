@@ -20,10 +20,10 @@ export const widgetRendererTool = tool({
       return 'Error: "title" and "widget_code" are required.'
     }
 
-    return {
-      type: 'widget' as const,
-      title,
-      widget_code,
-    }
+    // The widget HTML is delivered to the client as an `mcp_ui` message by the
+    // AfterToolCallEvent hook in the websocket transport (read from these same
+    // tool args). The tool result only needs a short confirmation for the
+    // tool-call bubble — returning the raw HTML here would pollute it.
+    return `Rendered widget: ${title}`
   },
 })
