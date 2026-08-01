@@ -1,291 +1,283 @@
 /**
  * ============================================================================
- *  Widget Renderer — live + final widget display via Shadow DOM
+ *  Widget Renderer — sandboxed iframe (srcdoc) with null-origin isolation
  * ============================================================================
  *
- *  Owns everything about rendering agent-generated SVG/HTML widgets:
- *    - building the preview card (title bar + shadow host)
- *    - a scoped theme (CSS variables, canvas) injected into the shadow root
- *    - detecting svg vs html mode
- *    - INCREMENTAL live updates as code streams in
- *    - finalizing: swap the live preview for the persisted file
+ *  SECURITY MODEL (from the Claude visualizer architecture article):
  *
- *  DESIGN RULE: this module knows nothing about the chat, SSE, or app state.
- *  The caller (app.js) drives the lifecycle:
+ *    Widgets render inside a SANDBOXED IFRAME using srcdoc. Because the
+ *    sandbox token does NOT include `allow-same-origin`, the iframe gets a
+ *    NULL origin — it is fully cut off from the host page:
  *
- *      const w = widgets.startPreview(parent, "Building widget...")
- *      w.update(code)                      // called as code streams in
- *      w.update(moreCode)
- *      w.finalize(title, mode, filepath)   // swap to saved file
+ *      ✗ cannot read host cookies / localStorage (origin mismatch)
+ *      ✗ cannot touch the host DOM (#chat, #input) (cross-origin DOM access)
+ *      ✗ cannot call host endpoints like /api/chat (cross-origin fetch blocked)
+ *      ✗ cannot open popups (no allow-popups)
+ *
+ *    The iframe CAN run scripts (allow-scripts) and submit forms (allow-forms).
+ *    All host communication is via postMessage through injected globals.
+ *
+ *  CDN ALLOWLIST: enforced via a <meta http-equiv="Content-Security-Policy">
+ *  tag injected into the srcdoc — scripts may only load from the 4 allowlisted
+ *  CDNs. Anything else is blocked by the browser.
  *
  *  ----------------------------------------------------------------------------
- *  Why Shadow DOM (not iframe + srcdoc)?
+ *  Streaming
  *  ----------------------------------------------------------------------------
- *  The previous design rewrote `iframe.srcdoc` on every streamed token, which
- *  DESTROYS and REBUILDS the entire framed document — causing flash, restarting
- *  animations, and re-running <script>. Shadow DOM fixes all three:
+ *  We rebuild the srcdoc on each tick during streaming (cheap — the browser
+ *  paints progressively as SVG/HTML elements arrive). On the FINAL commit we
+ *  do one last srcdoc write so <script> tags execute against the complete DOM.
  *
- *    1. ISOLATION   — the shadow root scopes the widget's CSS; host page
- *                     styles can't leak in and widget styles can't leak out.
- *                     (Equivalent to an iframe's document boundary.)
- *    2. DIRECT ACCESS — we hold a live DOM node and patch it incrementally,
- *                     so we never rebuild the whole tree.
- *    3. STATE SURVIVES — <script> runs ONCE (on first render); animations and
- *                     JS state persist across updates because nodes aren't
- *                     destroyed when their tag matches.
+ *  This re-runs scripts on each stream tick, which is acceptable for a local
+ *  dev tool — the alternative (postMessage into a cross-origin frame) is far
+ *  more fragile and harder to debug.
  *
- *  Incremental patching is done by morphTree() below — a tiny morphdom-style
- *  diff that walks the live tree vs the parsed target and updates only what
- *  changed (attributes, text, added/removed children).
+ *  ----------------------------------------------------------------------------
+ *  Height reporting
+ *  ----------------------------------------------------------------------------
+ *  A null-origin iframe can still postMessage its parent. We inject a small
+ *  script that observes document size changes and reports scrollHeight to the
+ *  host, which resizes the iframe.
  * ============================================================================
  */
+
+// CDN allowlist — injected as CSP so widget scripts can only load from these.
+const CDN_LIST = [
+  "https://esm.sh",
+  "https://cdnjs.cloudflare.com",
+  "https://cdn.jsdelivr.net",
+  "https://unpkg.com",
+].join(" ");
+
+const CSP_DIRECTIVES = [
+  "default-src 'unsafe-inline' data:",
+  `script-src 'unsafe-inline' ${CDN_LIST}`,
+  `style-src 'unsafe-inline' ${CDN_LIST}`,
+  `img-src 'self' data: ${CDN_LIST}`,
+  `font-src ${CDN_LIST}`,
+  `connect-src ${CDN_LIST}`,
+].join("; ");
+
+// The bridge script injected into every widget iframe. Defines sendPrompt,
+// openLink, window.storage, and a height reporter — all postMessage-based.
+const BRIDGE_SCRIPT = `
+<script>
+(function () {
+  var PARENT = window.parent;
+  var NS = "widget-bridge";
+  var msgId = 0;
+  var pending = new Map();
+  var lastH = -1;
+
+  function send(type, payload) {
+    PARENT.postMessage({ __bridge: NS, type: type, payload: payload || {} }, "*");
+  }
+
+  // ---- Height reporting ----
+  // Report document height to the parent so it can resize the iframe.
+  // (A null-origin srcdoc iframe can't be measured from outside.)
+  function reportHeight() {
+    var b = document.body;
+    var h = b ? b.scrollHeight : 0;
+    if (h !== lastH) { lastH = h; send("height", { height: h }); }
+  }
+  function tick() { reportHeight(); requestAnimationFrame(tick); }
+  if (document.readyState !== "loading") { tick(); }
+  else { document.addEventListener("DOMContentLoaded", tick); }
+  try {
+    new ResizeObserver(reportHeight).observe(document.documentElement);
+    new MutationObserver(reportHeight).observe(document.documentElement, {
+      childList: true, subtree: true
+    });
+  } catch (e) {}
+  window.addEventListener("load", reportHeight);
+  window.addEventListener("resize", reportHeight);
+
+  // ---- sendPrompt(text) → new agent turn ----
+  window.sendPrompt = function (text) { send("sendPrompt", { text: String(text) }); };
+
+  // ---- openLink(url) → host opens it (no popups in sandbox) ----
+  window.openLink = function (url) { send("openLink", { url: String(url) }); };
+
+  // ---- window.storage → async KV via postMessage ----
+  function storageOp(type, key, value) {
+    var id = ++msgId;
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { pending.delete(id); reject(new Error("storage " + type + " timeout")); }, 10000);
+      pending.set(id, { resolve: resolve, reject: reject, timer: timer });
+      var p = { key: String(key) };
+      if (value !== undefined) p.value = value;
+      send(type, Object.assign({ id: id }, p));
+    });
+  }
+  window.storage = {
+    get: function (k) { return storageOp("storage-get", k); },
+    set: function (k, v) { return storageOp("storage-set", k, v); },
+    delete: function (k) { return storageOp("storage-delete", k); },
+  };
+
+  // Receive storage responses from the host.
+  window.addEventListener("message", function (e) {
+    var d = e.data;
+    if (!d || d.__bridge !== NS || d.type !== "storage-response") return;
+    var entry = pending.get(d.id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    pending.delete(d.id);
+    d.error ? entry.reject(new Error(d.error)) : entry.resolve(d.value);
+  });
+})();
+</script>
+`;
 
 // ----------------------------------------------------------------------------
 //  Public API
 // ----------------------------------------------------------------------------
 
+let WIDGET_ORIGIN = null;
+
+/** Prefetch the widget-host origin from /api/config. Safe to call early. */
+export function initWidgetOrigin() {
+  if (WIDGET_ORIGIN) return WIDGET_ORIGIN;
+  WIDGET_ORIGIN = fetch("/api/config")
+    .then((r) => r.json())
+    .then((cfg) => cfg.widgetOrigin || "http://localhost:3001")
+    .catch(() => "http://localhost:3001");
+  return WIDGET_ORIGIN;
+}
+
+async function getWidgetOrigin() {
+  return await (WIDGET_ORIGIN || initWidgetOrigin());
+}
+
 /**
  * Start a new live widget preview.
- *
- * @param {HTMLElement} parent  - element to append the preview card into.
- * @param {string} [title]      - initial title-bar label.
- * @returns {WidgetPreview}     - handle to drive update() / finalize().
+ * @returns {Promise<WidgetPreview>}
  */
-export function startPreview(parent, title) {
+export async function startPreview(parent, title) {
   const card = buildCard(title || "Generating...");
   parent.appendChild(card.container);
   parent.scrollTop = parent.scrollHeight;
-  return new WidgetPreview(card);
+  const preview = new WidgetPreview(card);
+  preview._wireBridge();
+  return preview;
 }
 
 /**
  * Build a *finished* widget card from scratch (no live phase).
- * Fallback used when streaming events were missed (e.g. page reloaded mid-turn)
- * and we only have the final saved file.
- *
- * @param {HTMLElement} parent
- * @param {string} title
- * @param {"svg"|"html"} mode
- * @param {string} filepath  - only the basename is used to fetch from /exports/.
  */
-export function addFinishedWidget(parent, title, mode, filepath) {
+export async function addFinishedWidget(parent, title, mode, filepath) {
   const card = buildCard(title);
   card.titleBar.textContent = title;
-
-  const info = buildInfoBar(mode, filepath);
-  card.container.appendChild(info);
-
+  card.container.appendChild(buildInfoBar(mode, filepath));
   parent.appendChild(card.container);
   parent.scrollTop = parent.scrollHeight;
 
-  // Render the saved file into the shadow root.
-  const renderer = new WidgetPreview(card);
-  loadSavedFile(filepath)
-    .then((html) => renderer._setCode(stripWrapper(html)))
-    .catch(() => card.container.remove());
+  const preview = new WidgetPreview(card);
+  preview._wireBridge();
+  const origin = await getWidgetOrigin();
+  const filename = filepath.split("/").pop();
+  try {
+    const fullHtml = await fetchSavedFile(origin, filename);
+    const body = stripWrapper(fullHtml);
+    preview._render(body, mode || detectMode(body));
+  } catch {
+    card.container.remove();
+  }
 }
 
 
 // ----------------------------------------------------------------------------
-//  WidgetPreview — drives one widget's live → final lifecycle
+//  WidgetPreview
 // ----------------------------------------------------------------------------
 
 class WidgetPreview {
   constructor(card) {
     this.container = card.container;
     this.titleBar  = card.titleBar;
-    this.host      = card.host;        // the element whose shadow root we own
-    this.root      = card.root;        // the shadowRoot
-    this.viewport  = card.viewport;    // the themed canvas inside the shadow
-
-    // Live state (private).
-    this._code        = "";
-    this._mode        = null;          // "svg" | "html"
-    this._finalized   = false;
-    this._bootstrapped = false;        // have we set up the viewport + run <script>?
-    this._pendingRaf  = null;          // rAF handle for throttled renders
+    this.iframe    = card.iframe;
+    this.placeholder = card.placeholder;
+    this.wrapper     = card.wrapper;
+    this._code     = "";
+    this._mode     = null;
+    this._finalized = false;
+    this._bridgeHandler = null;
   }
 
-  /**
-   * Feed in the latest full widget code (the server sends the complete parsed
-   * value each tick, NOT a delta to append). Triggers an incremental patch.
-   */
+  /** Wire the postMessage listener that handles height + bridge requests. */
+  _wireBridge() {
+    this._bridgeHandler = (e) => this._onMessage(e);
+    window.addEventListener("message", this._bridgeHandler);
+  }
+
+  /** Feed in the latest full widget code (streaming tick). */
   update(code) {
     if (this._finalized) return;
     this._setCode(code);
-    this._scheduleRender();
+    this._render(this._code, this._mode);
   }
 
-  /**
-   * Commit the final code/mode and render immediately (bypass throttle).
-   * Called once when the tool-call arguments are fully received.
-   */
+  /** Commit final code + render once more so <script> runs against full DOM. */
   commit(code, mode) {
     if (this._finalized) return;
     if (typeof code === "string" && code) this._code = code;
     if (mode) this._mode = mode;
-    this._flush();
-    this._render();
+    this._render(this._code, this._mode);
   }
 
-  /**
-   * Transition from live preview to the persisted file on disk.
-   * - stops live updates
-   * - shows mode/filepath metadata
-   * - loads /exports/<basename> into the shadow root
-   */
-  finalize(title, mode, filepath) {
+  /** Transition from live preview to the persisted file on disk. */
+  async finalize(title, mode, filepath) {
     if (this._finalized) return;
-    this._flush();
     this._finalized = true;
-
     this.container.classList.remove("live-preview");
     this.titleBar.textContent = title;
+    this.container.insertBefore(
+      buildInfoBar(mode, filepath),
+      this.container.querySelector(".widget-frame")
+    );
 
-    const info = buildInfoBar(mode, filepath);
-    this.container.insertBefore(info, this.host.parentElement);
-
-    loadSavedFile(filepath)
-      .then((html) => this._setCode(stripWrapper(html)))
-      .catch(() => {});
+    const origin = await getWidgetOrigin();
+    const filename = filepath.split("/").pop();
+    try {
+      const fullHtml = await fetchSavedFile(origin, filename);
+      const body = stripWrapper(fullHtml);
+      this._mode = mode || detectMode(body);
+      this._code = body;
+      this._render(body, this._mode);
+    } catch {}
     return true;
   }
 
-  /** Mark the title bar as "finalized" (code done, now saving). */
   markFinalizing(label) {
     if (this._finalized) return;
     this.titleBar.innerHTML = `<span class="live-dot finalized"></span> ${escapeHtml(label || "widget")}`;
   }
 
-  /** Cancel any pending render (call when the preview is abandoned). */
   destroy() {
-    this._flush();
+    if (this._bridgeHandler) window.removeEventListener("message", this._bridgeHandler);
   }
 
   // ---- internals ----
 
-  /** Store latest code + detect mode. */
   _setCode(code) {
     this._code = String(code || "");
     if (!this._mode) this._mode = detectMode(this._code);
   }
 
   /**
-   * Throttle renders to one per animation frame. Because we now PATCH the DOM
-   * instead of rebuilding it, there's no flash — so we can render on every rAF
-   * safely. This keeps the preview tightly synced to the stream.
+   * Render widget code into the iframe via srcdoc.
+   * Builds a full HTML document with: CSP meta, theme tokens, the widget
+   * body, and the bridge script (so globals exist before widget scripts run).
    */
-  _scheduleRender() {
-    if (this._pendingRaf) return;           // already scheduled
-    this._pendingRaf = requestAnimationFrame(() => {
-      this._pendingRaf = null;
-      this._render();
-    });
-  }
-
-  /**
-   * Patch the latest code into the shadow root's viewport.
-   *
-   * First call bootstraps: sets the canvas mode (svg vs html), runs any
-   * <script> in the code once. Subsequent calls morph the existing tree to
-   * match the new code without rebuilding — so animations/state survive.
-   */
-  _render() {
-    if (this._finalized || !this._code) return;
-
-    // Parse the latest widget code into a detached node list.
-    const incoming = parseWidget(this._code, this._mode);
-
-    if (!this._bootstrapped) {
-      // First render: set up the canvas and adopt the nodes verbatim.
-      this.viewport.replaceChildren(...incoming.childNodes);
-      this._runScripts(this.viewport);          // widget JS runs exactly once
-      this._bootstrapped = true;
-    } else {
-      // Subsequent renders: morph the existing tree in place.
-      morphTree(this.viewport, incoming);
-    }
-    autoSize(this.host, this.viewport);
-  }
-
-  /** Run <script> tags inside `node`, since adopting nodes via the DOM does
-   *  not execute them (scripts only run when inserted via innerHTML into the
-   *  live document, which we avoid for patching). */
-  _runScripts(root) {
-    for (const old of root.querySelectorAll("script")) {
-      const s = document.createElement("script");
-      for (const attr of old.attributes) s.setAttribute(attr.name, attr.value);
-      s.textContent = old.textContent;
-      old.replaceWith(s);
-    }
-  }
-
-  /** Cancel a pending rAF render. */
-  _flush() {
-    if (this._pendingRaf) {
-      cancelAnimationFrame(this._pendingRaf);
-      this._pendingRaf = null;
-    }
-  }
-}
-
-
-// ----------------------------------------------------------------------------
-//  DOM construction
-// ----------------------------------------------------------------------------
-
-/**
- * Build the preview card skeleton: title bar + shadow host.
- * The shadow root is created here and pre-loaded with the scoped theme; the
- * widget code itself is patched into `viewport` on each render.
- */
-function buildCard(title) {
-  const container = document.createElement("div");
-  container.className = "widget-container live-preview";
-
-  const titleBar = document.createElement("div");
-  titleBar.className = "widget-title";
-  titleBar.innerHTML = `<span class="live-dot"></span> ${escapeHtml(title)}`;
-  container.appendChild(titleBar);
-
-  const frame = document.createElement("div");
-  frame.className = "widget-frame";
-  const host = document.createElement("div");
-  host.className = "widget-host";
-  frame.appendChild(host);
-  container.appendChild(frame);
-
-  // Create the shadow root + inject the isolated theme + a viewport node
-  // that widget content gets patched into.
-  const root = host.attachShadow({ mode: "open" });
-  root.innerHTML = SHADOW_THEME;
-  const viewport = root.getElementById("viewport");
-
-  return { container, titleBar, host, root, viewport };
-}
-
-/**
- * Scoped CSS + canvas injected into every widget's shadow root.
- * Defines the --visual-* theme variables the widgets depend on, and a dark
- * canvas that matches the host UI. Because it's in the shadow root, these
- * styles (and the widget's own <style>) cannot leak into or out of the widget.
- */
-const SHADOW_THEME = `
+  _render(code, mode) {
+    const body = mode === "svg" ? code : `<section class="widget">${code}</section>`;
+    const doc = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="${CSP_DIRECTIVES}">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-  :host { display: block; }
-  #viewport {
-    background: #0f0f0f;
-    color: #ffffff;
-    font-family: 'Barlow', sans-serif;
-    font-weight: 400;
-    padding: 24px;
-    box-sizing: border-box;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 120px;
-    overflow: hidden;
-  }
   :root {
     --visual-bg: transparent;
     --visual-surface: #1a1a1a;
@@ -299,23 +291,149 @@ const SHADOW_THEME = `
     --visual-warning: #ff4d4d;
     --visual-danger: #666666;
   }
-  * { box-sizing: border-box; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #0f0f0f; color: #ffffff; }
+  body {
+    font-family: 'Barlow', system-ui, sans-serif;
+    font-weight: 400;
+    padding: 20px 24px; overflow-x: auto;
+  }
   svg { max-width: 100%; height: auto; }
   .widget { max-width: 800px; margin: 0 auto; width: 100%; }
+  /* Slim scrollbar inside the iframe (its own document context). */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 0; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--visual-accent); }
+  * { scrollbar-width: thin; scrollbar-color: #2a2a2a transparent; }
+  /* Respect reduced-motion inside the widget too. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
 </style>
-<div id="viewport"></div>
-`;
+</head>
+<body>
+  <div id="viewport">${body}</div>
+  ${BRIDGE_SCRIPT}
+</body>
+</html>`;
+    // Setting srcdoc (re)loads the doc — scripts run against the full DOM.
+    // During streaming this re-executes each tick, which is acceptable here.
+    this.iframe.srcdoc = doc;
+  }
+
+  /** Handle messages from the iframe: height + bridge requests. */
+  _onMessage(e) {
+    if (e.source !== this.iframe.contentWindow) return;
+    const d = e.data;
+    if (!d || d.__bridge !== "widget-bridge") return;
+    const t = d.type;
+    const p = d.payload || {};
+
+    if (t === "height" && typeof p.height === "number") {
+      // Resize BOTH the iframe and its placeholder so the placeholder keeps
+      // layout space reserved while the wrapper animates to the new height.
+      this.iframe.style.height = p.height + "px";
+      this.wrapper.style.height = p.height + "px";
+      const chat = document.getElementById("chat");
+      if (chat) chat.scrollTop = chat.scrollHeight;
+    } else if (t === "sendPrompt") {
+      handleWidgetPrompt(p.text);
+    } else if (t === "openLink") {
+      if (p.url) window.open(p.url, "_blank", "noopener");
+    } else if (t === "storage-get" || t === "storage-set" || t === "storage-delete") {
+      let value, error;
+      try { value = widgetStorageOp(t, p.key, p.value); }
+      catch (err) { error = err.message; }
+      this.iframe.contentWindow.postMessage(
+        { __bridge: "widget-bridge", type: "storage-response", id: p.id, value, error },
+        "*"
+      );
+    }
+  }
+}
 
 
 // ----------------------------------------------------------------------------
-//  Code → DOM parsing & helpers
+//  In-memory widget storage (per page session)
 // ----------------------------------------------------------------------------
 
-/**
- * Decide svg vs html by sniffing the first characters. The show_visual tool
- * does the same check server-side; we replicate it so the live preview picks
- * the right wrapper before the tool executes.
- */
+const widgetStore = new Map();
+function widgetStorageOp(type, key, value) {
+  if (type === "storage-get") {
+    if (!widgetStore.has(key)) throw new Error("key not found: " + key);
+    return widgetStore.get(key);
+  }
+  if (type === "storage-set") { widgetStore.set(key, value); return undefined; }
+  if (type === "storage-delete") { widgetStore.delete(key); return undefined; }
+  return undefined;
+}
+
+
+// ----------------------------------------------------------------------------
+//  sendPrompt bridge → triggers a new agent turn
+// ----------------------------------------------------------------------------
+
+let promptHandler = null;
+export function onWidgetPrompt(fn) { promptHandler = fn; }
+function handleWidgetPrompt(text) { if (promptHandler) promptHandler(text); }
+
+
+// ----------------------------------------------------------------------------
+//  DOM construction
+// ----------------------------------------------------------------------------
+
+function buildCard(title) {
+  const container = document.createElement("div");
+  container.className = "widget-container live-preview";
+
+  const titleBar = document.createElement("div");
+  titleBar.className = "widget-title";
+  titleBar.innerHTML = `<span class="live-dot"></span> ${escapeHtml(title)}`;
+  container.appendChild(titleBar);
+
+  const frame = document.createElement("div");
+  frame.className = "widget-frame";
+
+  // Two-div pattern (from the Claude visualizer architecture): a placeholder
+  // reserves layout space so the page doesn't jump when the iframe grows,
+  // and an inner wrapper carries the smooth height transition.
+  const placeholder = document.createElement("div");
+  placeholder.className = "widget-placeholder";
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "widget-wrapper";
+
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("title", "widget preview");
+  // NO allow-same-origin → null origin → fully isolated from the host page.
+  iframe.setAttribute("sandbox", "allow-scripts allow-forms");
+  iframe.setAttribute("allow", "fullscreen *; clipboard-write *");
+  // Cap width to the widget content (800px + inner padding) so the iframe's
+  // scrollbar hugs the widget instead of stretching across the full card.
+  iframe.style.cssText =
+    "width:100%;max-width:848px;margin:0 auto;height:0;border:0;display:block;background:#0f0f0f;";
+  // Seed with an empty shell so the iframe is ready to receive srcdoc.
+  iframe.srcdoc =
+    "<!DOCTYPE html><html><head><meta charset=utf-8></head><body></body></html>";
+
+  wrapper.appendChild(iframe);
+  placeholder.appendChild(wrapper);
+  frame.appendChild(placeholder);
+  container.appendChild(frame);
+
+  return { container, titleBar, iframe, placeholder, wrapper };
+}
+
+
+// ----------------------------------------------------------------------------
+//  Helpers
+// ----------------------------------------------------------------------------
+
 function detectMode(code) {
   return String(code || "").trimStart().slice(0, 4).toLowerCase().startsWith("<svg")
     ? "svg"
@@ -323,135 +441,26 @@ function detectMode(code) {
 }
 
 /**
- * Parse raw widget code into a detached DocumentFragment.
- *
- * SVG needs the SVG namespace so elements render correctly; HTML parses in the
- * default namespace. A <template> gives us a clean detached container whose
- * children we can morph against the live viewport.
- */
-function parseWidget(code, mode) {
-  const tpl = document.createElement("template");
-  if (mode === "svg") {
-    // Wrap in an SVG parent so the parser uses the SVG namespace, then unwrap.
-    tpl.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg">${code}</svg>`;
-    const svg = tpl.content.firstElementChild;
-    const frag = document.createDocumentFragment();
-    while (svg.firstChild) frag.appendChild(svg.firstChild);
-    return frag;
-  }
-  // HTML mode: the tool's contract is a fragment (no <html>/<body>).
-  // Wrap in a .widget section to match what the saved file produces.
-  tpl.innerHTML = `<section class="widget">${code}</section>`;
-  return tpl.content;
-}
-
-/**
- * Saved widget files are full HTML documents (the tool wraps them). For shadow
- * rendering we only want the widget body. This extracts the inner content of
- * the <section class="widget">…</section> if present, else returns as-is.
+ * Extract the widget body from a saved HTML file. Saved files are full HTML
+ * documents; for rendering inside our iframe we only want the widget content.
+ * Tries (in order): <section class="widget"> body, then the <svg> element,
+ * then <body> contents, else returns as-is.
  */
 function stripWrapper(fullHtml) {
-  const m = fullHtml.match(/<section class="widget">([\s\S]*?)<\/section>/);
-  return m ? m[1].trim() : fullHtml;
+  const sec = fullHtml.match(/<section class="widget">([\s\S]*?)<\/section>/);
+  if (sec) return sec[1].trim();
+  // SVG files may not have the section wrapper — grab the raw <svg>…</svg>.
+  const svg = fullHtml.match(/<svg[\s\S]*?<\/svg>/);
+  if (svg) return svg[0];
+  const body = fullHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/);
+  return body ? body[1].trim() : fullHtml;
 }
 
-
-// ----------------------------------------------------------------------------
-//  morphTree — minimal incremental DOM diff (morphdom-style)
-// ----------------------------------------------------------------------------
-//
-//  Walks the live tree (liveRoot) and the target tree (newFrag) in parallel,
-//  updating `liveRoot` to match `newFrag` with the FEWEST possible mutations:
-//
-//    - matching nodes (same tag) → update attributes + text in place
-//    - mismatched nodes          → replace
-//    - extra live children       → remove
-//    - extra new children        → append
-//
-//  Because matching nodes are kept (not replaced), running animations, focus,
-//  scroll position, and JS-attached state on those nodes survive updates.
-//  This is the key difference from innerHTML/srcdoc replacement.
-
-function morphTree(liveRoot, newFrag) {
-  const liveKids = [...liveRoot.childNodes];
-  const newKids = [...newFrag.childNodes];
-  const max = Math.max(liveKids.length, newKids.length);
-
-  for (let i = 0; i < max; i++) {
-    const live = liveKids[i];
-    const next = newKids[i];
-
-    if (!next) {
-      // No corresponding new node → remove the live one.
-      live && live.remove();
-    } else if (!live) {
-      // No corresponding live node → append the new one.
-      liveRoot.appendChild(next);
-    } else if (isSameNode(live, next)) {
-      // Same node → patch attributes/text + recurse into children.
-      patchAttributes(live, next);
-      if (live.nodeType === Node.TEXT_NODE) {
-        if (live.textContent !== next.textContent) live.textContent = next.textContent;
-      } else if (live.nodeType === Node.ELEMENT_NODE) {
-        morphTree(live, next);
-      }
-    } else {
-      // Different node (tag/name mismatch) → replace.
-      live.replaceWith(next);
-    }
-  }
+async function fetchSavedFile(origin, filename) {
+  const r = await fetch(`${origin}/exports/${filename}`);
+  return await r.text();
 }
 
-/** Two nodes are "the same" if they share an element tag name, or both are
- *  text/comment nodes of the same type. */
-function isSameNode(a, b) {
-  if (a.nodeType !== b.nodeType) return false;
-  if (a.nodeType === Node.ELEMENT_NODE) {
-    return a.localName === b.localName;
-  }
-  return true; // text/comment nodes match by type
-}
-
-/** Copy attributes from `src` onto `dst`, removing any that were deleted. */
-function patchAttributes(dst, src) {
-  if (dst.nodeType !== Node.ELEMENT_NODE) return;
-
-  // Remove attributes present on dst but not on src.
-  for (const attr of [...dst.attributes]) {
-    if (!src.hasAttribute(attr.name)) dst.removeAttribute(attr.name);
-  }
-  // Set/update attributes from src.
-  for (const attr of src.attributes) {
-    if (dst.getAttribute(attr.name) !== attr.value) {
-      dst.setAttribute(attr.name, attr.value);
-    }
-  }
-}
-
-
-// ----------------------------------------------------------------------------
-//  Sizing & loading helpers
-// ----------------------------------------------------------------------------
-
-/**
- * Size the host element to its shadow content height, clamped.
- * Runs after every render so the card grows/shrinks with the widget.
- */
-function autoSize(host, viewport) {
-  const h = viewport.scrollHeight;
-  host.style.height = h + 8 + "px";
-}
-
-/** Fetch the persisted widget file from /exports/ and return its HTML. */
-function loadSavedFile(filepath) {
-  const filename = filepath.split("/").pop();
-  return fetch(`/exports/${filename}`).then((r) => r.text());
-}
-
-/**
- * Build the metadata bar shown on a finalized widget: mode badge, filepath,
- * and a download button (top-right) that saves the file locally.
- */
 function buildInfoBar(mode, filepath) {
   const info = document.createElement("div");
   info.className = "widget-info";
@@ -459,39 +468,34 @@ function buildInfoBar(mode, filepath) {
     <span class="widget-mode">${escapeHtml((mode || "").toUpperCase())}</span>
     <span class="widget-path">${escapeHtml(filepath)}</span>
   `;
-
   const btn = document.createElement("button");
   btn.className = "widget-download";
   btn.type = "button";
   btn.title = "Download";
   btn.setAttribute("aria-label", "Download widget");
   btn.innerHTML = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M8 2v8m0 0l-3-3m3 3l3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 13h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
-  btn.addEventListener("click", () => downloadWidget(filepath, mode));
-
+  btn.addEventListener("click", () => downloadWidget(filepath));
   info.appendChild(btn);
   return info;
 }
 
-/** Download the saved widget file with the correct extension. */
-function downloadWidget(filepath, mode) {
+async function downloadWidget(filepath) {
   const filename = filepath.split("/").pop().replace(/\.[^.]+$/, "");
-  const ext = "html";
-  loadSavedFile(filepath)
-    .then((html) => {
-      const blob = new Blob([html], { type: "text/plain" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${filename}.${ext}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    })
-    .catch(() => {});
+  const origin = await getWidgetOrigin();
+  try {
+    const html = await fetchSavedFile(origin, filepath.split("/").pop());
+    const blob = new Blob([html], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${filename}.html`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch {}
 }
 
-/** Escape a string for safe insertion into innerHTML. */
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, "&amp;")
