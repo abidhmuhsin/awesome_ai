@@ -170,9 +170,9 @@ function connectSSE() {
   // of the show_visual tool call before it runs. The server parses the partial
   // JSON and sends the clean widget_code string each tick.
 
-  evtSource.addEventListener("widget_stream_start", () => {
+  evtSource.addEventListener("widget_stream_start", async () => {
     if (!currentWidget) {
-      currentWidget = widgets.startPreview(chat, "Building widget...");
+      currentWidget = await widgets.startPreview(chat, "Building widget...");
     }
   });
 
@@ -209,6 +209,26 @@ function connectSSE() {
 
 // Kick off the SSE connection on load.
 connectSSE();
+
+// Prefetch the widget-host origin so the first streamed widget isn't blocked
+// on a config fetch when it tries to finalize/download.
+widgets.initWidgetOrigin();
+
+// Wire the widget bridge: when a sandboxed widget calls sendPrompt(text),
+// treat it like the user typed it and run a new agent turn.
+widgets.onWidgetPrompt((text) => {
+  if (!text || sending) return;
+  addMessageEl("user", text);
+  setSending(true);
+  fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: text }),
+  }).catch((err) => {
+    addMessageEl("assistant", `❌ Error: ${err.message}`);
+    setSending(false);
+  });
+});
 
 
 // ============================================================================

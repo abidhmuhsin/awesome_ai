@@ -10,12 +10,8 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-
-const execAsync = promisify(exec);
 
 // --- Module guidance ---
 
@@ -48,6 +44,8 @@ const MODULE_GUIDANCE: Record<ModuleName, string[]> = {
     "Prefer direct labels and readable axis text.",
     "Show units, scale, and empty states where relevant.",
     "Do not imply precision that the data does not support.",
+    "For animated bar/shape growth, animate transform (scaleY/translateY on a <g> with transform-origin) — NEVER animate height, y, or width attributes.",
+    "For line/area draw-in, use stroke-dasharray + animated stroke-dashoffset.",
   ],
   art: [
     "Keep the canvas transparent unless a background is necessary.",
@@ -58,6 +56,8 @@ const MODULE_GUIDANCE: Record<ModuleName, string[]> = {
     "Choose the simplest chart that answers the question.",
     "Use consistent colors for recurring series.",
     "Make legends unnecessary when direct labels can work.",
+    "Animate bars via transform: scaleY() on a wrapping <g> (transform-origin at the baseline) — NEVER animate the rect's height or y attribute.",
+    "Animate line/area draw-in via stroke-dashoffset, not by animating path d or points.",
   ],
   elicitation: [
     "Use forms or buttons for structured choices.",
@@ -162,6 +162,23 @@ const visualInstructionsTool = defineTool({
         "Ensure text fits at mobile and desktop widths.",
         "Scripts may be included in HTML widgets and should be self-contained.",
         "A global sendPrompt(text) function may be called from user-triggered events.",
+        // --- Streaming-friendly authoring (content streams in token by token) ---
+        "Order code for streaming: <style> first, visible SVG/HTML next, <script> last.",
+        "Prefer inline styles over <style> blocks for controls (they apply mid-stream).",
+        "Avoid gradients and shadows — they flicker while content streams in.",
+        // --- Animation constraints (GPU-composited ONLY) ---
+        // Layout-triggering and paint-triggering properties are forbidden because
+        // they cause repaint storms across the iframe boundary during streaming
+        // and hurt performance. This applies to BOTH CSS and SVG <animate>.
+        "ANIMATION RULE (critical): The ONLY properties you may animate are transform, opacity, and stroke-dashoffset. This is non-negotiable.",
+        "FORBIDDEN animated properties (CSS AND SVG <animate>): width, height, x, y, cx, cy, r, rx, ry, top, left, right, bottom, margin, padding, font-size, line-height, fill, stroke, stroke-width, background-color, color, border, box-shadow, filter. Animating ANY of these triggers layout recalculation or repaint.",
+        "For SVG bars/shapes that need to grow, wrap the shape in a <g> and animate transform: scaleY()/translateY() with transform-origin set, OR animate stroke-dashoffset on an outline. NEVER animate the height/y/x attributes of <rect>, <circle>, <ellipse>, <path>.",
+        "For line/area draw-in effects, use stroke-dasharray + animated stroke-dashoffset (the one allowed paint property).",
+        "Keep loop durations between 0.8s and 2.0s (sweet spot 1.0–1.6s).",
+        "Wrap all animation/transition declarations in @media (prefers-reduced-motion: no-preference) { } so reduced-motion users see a static result.",
+        // --- sendPrompt + storage conventions ---
+        "sendPrompt(text) should carry full context (values + labels) so the agent can reason about it; suffix sendPrompt buttons with ↗.",
+        "Use window.storage for persistence with namespaced keys like 'table:record_id' (< 200 chars, no spaces). storage.get() throws on missing keys — wrap in try/catch.",
       ],
       module_guidance: Object.fromEntries(
         modules.map((m) => [m, MODULE_GUIDANCE[m]])
@@ -259,48 +276,35 @@ const showVisualTool = defineTool({
       };
     }
 
-    // Build the full HTML page
+    // Build the full HTML page.
+    // Both SVG and HTML widgets share the same wrapper document — the only
+    // difference is the file extension (and that SVG widgets are wrapped in
+    // the same <section class="widget"> so the renderer can extract them
+    // uniformly). Theme tokens match the live iframe renderer in widgets.js.
     const ext = mode === "svg" ? "svg" : "html";
-    const fullHtml =
-      mode === "svg"
-        ? `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>${title}</title>
-<style>
-  body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #0f172a; }
-  svg { max-width: 95vw; max-height: 95vh; }
-</style>
-</head>
-<body>
-${widget_code}
-</body>
-</html>`
-        : `<!DOCTYPE html>
+    const fullHtml = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
 <title>${title}</title>
 <style>
   :root {
-    --visual-bg: transparent; --visual-surface: #1e293b; --visual-surface-2: #334155;
-    --visual-text: #f1f5f9; --visual-muted: #94a3b8; --visual-border: #475569;
-    --visual-accent: #3b82f6; --visual-accent-2: #14b8a6;
-    --visual-success: #22c55e; --visual-warning: #eab308; --visual-danger: #ef4444;
+    --visual-bg: transparent; --visual-surface: #1a1a1a; --visual-surface-2: #222222;
+    --visual-text: #ffffff; --visual-muted: #666666; --visual-border: rgba(255,255,255,0.08);
+    --visual-accent: #ff4d4d; --visual-accent-2: #ff2020;
+    --visual-success: #ff4d4d; --visual-warning: #ff4d4d; --visual-danger: #666666;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #0f172a; color: #f1f5f9; font-family: system-ui, sans-serif; padding: 24px; }
-  .widget { max-width: 800px; margin: 0 auto; }
+  html, body { background: #0f0f0f; color: #ffffff; }
+  body { font-family: 'Barlow', system-ui, sans-serif; padding: 24px; overflow-x: hidden; }
+  .widget { max-width: 800px; margin: 0 auto; width: 100%; }
+  svg { max-width: 100%; height: auto; }
 </style>
 </head>
 <body>
 <section class="widget">
 ${widget_code}
 </section>
-<script>
-function sendPrompt(text) { console.log("sendPrompt:", text); }
-</script>
 </body>
 </html>`;
 
@@ -310,26 +314,18 @@ function sendPrompt(text) { console.log("sendPrompt:", text); }
     const filepath = join(WIDGET_DIR, filename);
     await writeFile(filepath, fullHtml, "utf8");
 
-    // Open in browser
-    try {
-      const platform = process.platform;
-      const cmd =
-        platform === "darwin"
-          ? `open "${filepath}"`
-          : platform === "win32"
-            ? `start "" "${filepath}"`
-            : `xdg-open "${filepath}"`;
-      await execAsync(cmd, { timeout: 5000 });
-    } catch {
-      // Browser open may fail in headless environments — not fatal
-    }
+    // Relative path for display/transport — the frontend only needs the
+    // basename (via split("/").pop()) to fetch the file, and showing an
+    // absolute path in the UI leaks the host filesystem layout. Keep `exports/`
+    // as the portable prefix so the displayed path is stable across machines.
+    const relativePath = `exports/${filename}`;
 
     const result = {
       type: "visual_widget" as const,
       title,
       mode,
       filename,
-      filepath,
+      filepath: relativePath,
       loading_messages: cleaned,
       renderer_contract: {
         background: "transparent",
@@ -342,7 +338,7 @@ function sendPrompt(text) { console.log("sendPrompt:", text); }
       content: [
         {
           type: "text",
-          text: `Widget saved to ${filepath} and opened in browser.`,
+          text: `Widget saved to ${relativePath} and opened in browser.`,
         },
       ],
       details: result,

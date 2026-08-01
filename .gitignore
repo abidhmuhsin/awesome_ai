@@ -1,0 +1,6 @@
+# Pi session exports (generated HTML transcripts)
+pi-session-*.html
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

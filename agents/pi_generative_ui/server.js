@@ -33,7 +33,7 @@
 
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, dirname, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
@@ -42,6 +42,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { startWidgetHost } from "./widget-host.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -130,6 +131,7 @@ try {
 }
 
 const PORT     = process.env.PORT     || 3000;
+const WIDGET_ORIGIN = process.env.WIDGET_ORIGIN || `http://localhost:${process.env.WIDGET_PORT || 3001}`;
 // API key for the OpenAI-compatible endpoint configured by API_BASE.
 const API_KEY  = process.env.OPENAI_API_KEY;
 const API_BASE = process.env.API_BASE || "https://api.openai.com/v1";
@@ -153,23 +155,48 @@ log.info(`Model:       ${c.white}${MODEL_ID}${c.reset}`);
 
 const AGENT_DIR = join(__dirname, ".pi");
 
+// Identifier of the custom OpenAI-compatible provider we register below.
+const PROVIDER_ID = "native-local";
+
 // ModelRuntime manages provider config + API keys.
 const modelRuntime = await ModelRuntime.create({ agentDir: AGENT_DIR });
-modelRuntime.setRuntimeApiKey("openrouter", API_KEY);
+modelRuntime.setRuntimeApiKey(PROVIDER_ID, API_KEY);
 
 /**
- * Register a custom provider baseUrl when not using the default OpenAI URL.
- * This lets us point the "openrouter" provider at any OpenAI-compatible API.
+ * Register a custom OpenAI-compatible provider pointed at API_BASE.
+ * Legacy provider-config form (see custom-provider.md "Register New Provider").
+ * We declare exactly one model (MODEL_ID) so getModel() can resolve it;
+ * cost/window defaults are placeholders — tune if you need usage accounting.
+ *
+ * The config is shared between the ModelRuntime (registered synchronously below
+ * so getModel() resolves the model BEFORE a session starts) and the resource
+ * loader's extension factory. This matters because pi.registerProvider() inside
+ * an extension factory only *queues* the registration — it is flushed into the
+ * runtime during ExtensionRunner.bindCore(), which runs inside
+ * createAgentSession. Without the direct registration, getModel() would return
+ * undefined and getOrCreateSession() would fall back to an unrelated default.
  */
-const customProviderExtension = {
-  name: "custom-provider",
-  factory: (pi) => {
-    if (API_BASE !== "https://api.openai.com/v1") {
-      pi.registerProvider("openrouter", { baseUrl: API_BASE });
-      log.success(`Custom provider: ${API_BASE}`);
-    }
-  },
+const providerConfig = {
+  name: "Native Local",
+  baseUrl: API_BASE,
+  apiKey: "$OPENAI_API_KEY",
+  api: "openai-completions",
+  models: [
+    {
+      id: MODEL_ID,
+      name: MODEL_ID,
+      reasoning: false,
+      input: ["text", "image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 8192,
+    },
+  ],
 };
+
+// Register on the runtime directly so the model is resolvable now.
+modelRuntime.registerProvider(PROVIDER_ID, providerConfig);
+log.success(`Custom provider: ${API_BASE}`);
 
 /**
  * System prompt — tells the LLM how to behave.
@@ -204,7 +231,7 @@ const loader = new DefaultResourceLoader({
   cwd: __dirname,
   agentDir: AGENT_DIR,
   additionalExtensionPaths: [join(__dirname, ".pi", "extensions")],
-  extensionFactories: [customProviderExtension],
+  extensionFactories: [],
   skillsOverride:    () => ({ skills: [], diagnostics: [] }),
   promptsOverride:   () => ({ prompts: [], diagnostics: [] }),
   agentsFilesOverride: () => ({ agentsFiles: [], diagnostics: [] }),
@@ -231,7 +258,7 @@ let session = null;
 async function getOrCreateSession() {
   if (session) return session;
 
-  const model = modelRuntime.getModel("openrouter", MODEL_ID);
+  const model = modelRuntime.getModel(PROVIDER_ID, MODEL_ID);
   if (!model) {
     log.error(`Model not found: ${MODEL_ID}`);
   } else {
@@ -327,16 +354,23 @@ const server = createServer(async (req, res) => {
     return handleChat(req, res);
   }
 
-  // ---- Route: generated widget files (exports/) ----
-  if (req.url.startsWith("/exports/")) {
-    return serveFile(req, res, join(__dirname, req.url));
+  // ---- Route: client config (widget origin etc.) ----
+  if (req.url === "/api/config" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ widgetOrigin: WIDGET_ORIGIN }));
   }
 
   // ---- Route: static frontend files (ui/) ----
   // "/" maps to the index page; everything else is resolved under ui/.
-  const filePath = req.url === "/"
-    ? join(__dirname, "ui", "index.html")
-    : join(__dirname, "ui", req.url);
+  // The path is normalized and confined under ui/ to block traversal attacks
+  // (e.g. "/../package.json") from reaching files outside the frontend folder.
+  const uiDir = join(__dirname, "ui");
+  const requested = req.url === "/" ? "index.html" : req.url;
+  const filePath = join(uiDir, normalize(requested));
+  if (!(filePath + sep).startsWith(uiDir + sep)) {
+    res.writeHead(403);
+    return res.end("Forbidden");
+  }
   return serveFile(req, res, filePath);
 });
 
@@ -490,7 +524,7 @@ function translateAgentEvent(event) {
 
 /**
  * Serve a file from disk with the right Content-Type, or 404.
- * Shared by the /exports/ route and the static-ui route.
+ * Shared by the static-ui route.
  */
 async function serveFile(req, res, filePath) {
   try {
@@ -516,5 +550,13 @@ server.listen(PORT, () => {
   log.success(`Server listening on ${c.bold}${c.white}http://localhost:${PORT}${c.reset}`);
   log.info(`Extensions:  ${c.white}.pi/extensions/${c.reset}`);
   log.info(`Frontend:    ${c.white}http://localhost:${PORT}${c.reset}`);
+  log.info(`Widget host: ${c.white}${WIDGET_ORIGIN}${c.reset}`);
   console.log();
+
+  // Start the cross-origin widget sandbox server.
+  try {
+    startWidgetHost();
+  } catch (err) {
+    log.warn(`Widget host failed to start: ${err.message}`);
+  }
 });
