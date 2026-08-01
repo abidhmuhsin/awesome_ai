@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Generative UI Agent</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Generative UI Agent</h1>
+      <span id="status-dot" class="status-dot disconnected"></span>
+    </header>
+
+    <main id="chat"></main>
+
+    <form id="composer">
+      <textarea id="input" placeholder="Describe what you want to see..." rows="1"></textarea>
+      <button type="submit">Send</button>
+    </form>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
