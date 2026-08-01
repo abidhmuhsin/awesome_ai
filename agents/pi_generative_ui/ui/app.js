@@ -71,9 +71,10 @@ let currentWidget = null;
 let thinkingDiv = null;
 let thinkingText = "";
 
-// --- Tool call card ---
-let toolCallDiv = null;
-let toolStartTime = null;
+// --- Tool call cards (keyed by tool name, since multiple can overlap) ---
+//  A stack of currently-open tool cards, newest last. tool_end matches by
+//  toolName; if multiple open cards share a name, the most recent is finished.
+let openToolCards = [];   // [{ name, details, startTime }]`
 
 
 // ============================================================================
@@ -127,11 +128,12 @@ function connectSSE() {
   // ---- Tool execution lifecycle (the tool ACTUALLY ran) ----
   evtSource.addEventListener("tool_start", (e) => {
     const { toolName, args } = JSON.parse(e.data);
-    toolStartTime = Date.now();
+    const startTime = Date.now();
 
-    toolCallDiv = buildToolCard(toolName, args);
-    chat.appendChild(toolCallDiv);
+    const card = buildToolCard(toolName, args);
+    chat.appendChild(card);
     chat.scrollTop = chat.scrollHeight;
+    openToolCards.push({ name: toolName, details: card, startTime });
 
     // show_visual is executing → the streamed code is final; mark the title.
     if (toolName === "show_visual" && currentWidget) {
@@ -141,9 +143,15 @@ function connectSSE() {
 
   evtSource.addEventListener("tool_end", (e) => {
     const { toolName, isError, details } = JSON.parse(e.data);
-    finishToolCard(toolCallDiv, isError, toolStartTime);
-    toolCallDiv = null;
-    toolStartTime = null;
+    // Match the most recent OPEN card for this tool name (LIFO).
+    const idx = (() => {
+      for (let i = openToolCards.length - 1; i >= 0; i--) {
+        if (openToolCards[i].name === toolName) return i;
+      }
+      return -1;
+    })();
+    const entry = idx >= 0 ? openToolCards.splice(idx, 1)[0] : null;
+    finishToolCard(entry?.details, isError, entry?.startTime);
 
     // show_visual finished → swap the live preview for the saved file.
     if (toolName === "show_visual" && details?.filepath) {
@@ -190,8 +198,7 @@ function connectSSE() {
     }
     thinkingDiv = null;
     thinkingText = "";
-    toolCallDiv = null;
-    toolStartTime = null;
+    openToolCards = [];
     setSending(false);
   });
 
@@ -215,10 +222,33 @@ function setStatus(status) {
 
 /** Append a user/assistant message bubble and return the element. */
 function addMessageEl(role, text) {
+  const wrap = document.createElement("div");
+  wrap.className = `message-row ${role}`;
+
   const div = document.createElement("div");
   div.className = `message ${role}`;
   div.textContent = text; // safe: no HTML parsing
-  chat.appendChild(div);
+
+  const btn = document.createElement("button");
+  btn.className = "copy-btn";
+  btn.type = "button";
+  btn.title = "Copy";
+  btn.setAttribute("aria-label", "Copy message");
+  btn.innerHTML = `<svg class="copy-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4h8v8H4z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3h8" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`;
+  btn.addEventListener("click", () => {
+    navigator.clipboard.writeText(div.textContent || "").then(() => {
+      btn.classList.add("copied");
+      btn.innerHTML = `<svg class="copy-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      setTimeout(() => {
+        btn.classList.remove("copied");
+        btn.innerHTML = `<svg class="copy-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4h8v8H4z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3h8" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`;
+      }, 1400);
+    });
+  });
+
+  wrap.appendChild(div);
+  wrap.appendChild(btn);
+  chat.appendChild(wrap);
   chat.scrollTop = chat.scrollHeight;
   return div;
 }
