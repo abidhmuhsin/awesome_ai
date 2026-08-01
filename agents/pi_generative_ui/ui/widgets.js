@@ -72,12 +72,7 @@ export function addFinishedWidget(parent, title, mode, filepath) {
   const card = buildCard(title);
   card.titleBar.textContent = title;
 
-  const info = document.createElement("div");
-  info.className = "widget-info";
-  info.innerHTML = `
-    <span class="widget-mode">${escapeHtml((mode || "").toUpperCase())}</span>
-    <span class="widget-path">${escapeHtml(filepath)}</span>
-  `;
+  const info = buildInfoBar(mode, filepath);
   card.container.appendChild(info);
 
   parent.appendChild(card.container);
@@ -147,12 +142,7 @@ class WidgetPreview {
     this.container.classList.remove("live-preview");
     this.titleBar.textContent = title;
 
-    const info = document.createElement("div");
-    info.className = "widget-info";
-    info.innerHTML = `
-      <span class="widget-mode">${escapeHtml((mode || "").toUpperCase())}</span>
-      <span class="widget-path">${escapeHtml(filepath)}</span>
-    `;
+    const info = buildInfoBar(mode, filepath);
     this.container.insertBefore(info, this.host.parentElement);
 
     loadSavedFile(filepath)
@@ -284,9 +274,10 @@ const SHADOW_THEME = `
 <style>
   :host { display: block; }
   #viewport {
-    background: #0f172a;
-    color: #f1f5f9;
-    font-family: system-ui, sans-serif;
+    background: #0f0f0f;
+    color: #ffffff;
+    font-family: 'Barlow', sans-serif;
+    font-weight: 400;
     padding: 24px;
     box-sizing: border-box;
     display: flex;
@@ -296,10 +287,17 @@ const SHADOW_THEME = `
     overflow: hidden;
   }
   :root {
-    --visual-bg: transparent; --visual-surface: #1e293b; --visual-surface-2: #334155;
-    --visual-text: #f1f5f9; --visual-muted: #94a3b8; --visual-border: #475569;
-    --visual-accent: #3b82f6; --visual-accent-2: #14b8a6;
-    --visual-success: #22c55e; --visual-warning: #eab308; --visual-danger: #ef4444;
+    --visual-bg: transparent;
+    --visual-surface: #1a1a1a;
+    --visual-surface-2: #222222;
+    --visual-text: #ffffff;
+    --visual-muted: #666666;
+    --visual-border: rgba(255,255,255,0.08);
+    --visual-accent: #ff4d4d;
+    --visual-accent-2: #ff2020;
+    --visual-success: #ff4d4d;
+    --visual-warning: #ff4d4d;
+    --visual-danger: #666666;
   }
   * { box-sizing: border-box; }
   svg { max-width: 100%; height: auto; }
@@ -441,13 +439,56 @@ function patchAttributes(dst, src) {
  */
 function autoSize(host, viewport) {
   const h = viewport.scrollHeight;
-  host.style.height = Math.min(h + 8, 500) + "px";
+  host.style.height = h + 8 + "px";
 }
 
 /** Fetch the persisted widget file from /exports/ and return its HTML. */
 function loadSavedFile(filepath) {
   const filename = filepath.split("/").pop();
   return fetch(`/exports/${filename}`).then((r) => r.text());
+}
+
+/**
+ * Build the metadata bar shown on a finalized widget: mode badge, filepath,
+ * and a download button (top-right) that saves the file locally.
+ */
+function buildInfoBar(mode, filepath) {
+  const info = document.createElement("div");
+  info.className = "widget-info";
+  info.innerHTML = `
+    <span class="widget-mode">${escapeHtml((mode || "").toUpperCase())}</span>
+    <span class="widget-path">${escapeHtml(filepath)}</span>
+  `;
+
+  const btn = document.createElement("button");
+  btn.className = "widget-download";
+  btn.type = "button";
+  btn.title = "Download";
+  btn.setAttribute("aria-label", "Download widget");
+  btn.innerHTML = `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M8 2v8m0 0l-3-3m3 3l3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 13h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+  btn.addEventListener("click", () => downloadWidget(filepath, mode));
+
+  info.appendChild(btn);
+  return info;
+}
+
+/** Download the saved widget file with the correct extension. */
+function downloadWidget(filepath, mode) {
+  const filename = filepath.split("/").pop().replace(/\.[^.]+$/, "");
+  const ext = "html";
+  loadSavedFile(filepath)
+    .then((html) => {
+      const blob = new Blob([html], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${filename}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    })
+    .catch(() => {});
 }
 
 /** Escape a string for safe insertion into innerHTML. */

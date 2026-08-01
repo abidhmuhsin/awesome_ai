@@ -1,15 +1,20 @@
 :root {
-  --bg: #0f172a;
-  --surface: #1e293b;
-  --surface-2: #334155;
-  --text: #f1f5f9;
-  --muted: #94a3b8;
-  --border: #475569;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --success: #22c55e;
-  --danger: #ef4444;
-  --radius: 8px;
+  --bg:           #0f0f0f;
+  --surface:      #1a1a1a;
+  --text:         #ffffff;
+  --text-muted:   #666666;
+  --accent:       #ff4d4d;
+  --accent-hover: #ff2020;
+  --white-bg:     #f5f5f5;
+  --dark-text:    #111111;
+  --border:       rgba(255, 255, 255, 0.08);
+  --shadow-hard:  4px 4px 0 rgba(255, 77, 77, 0.3);
+  --success:      #ff4d4d;
+  --danger:       #666666;
+  --radius:       4px;
+  --font-display: 'Bebas Neue', sans-serif;
+  --font-body:    'Barlow', sans-serif;
+  --transition:   0.25s ease-out;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -20,7 +25,8 @@ html, body {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-body);
+  font-weight: 400;
   background: var(--bg);
   color: var(--text);
 }
@@ -29,202 +35,389 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  max-width: 800px;
+  max-width: 900px;
   margin: 0 auto;
 }
 
-/* Header */
+/* ============================================================
+   HEADER — accent stripe, oversized caps
+   ============================================================ */
 header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 16px 24px;
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  position: relative;
 }
-header h1 { font-size: 1rem; font-weight: 600; }
+/* 4px accent vertical rule on far-left edge */
+header::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 4px;
+  background: var(--accent);
+}
+header h1 {
+  font-family: var(--font-display);
+  font-size: 1.75rem;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  line-height: 1;
+}
+header h1 span { color: var(--accent); }
 .status-dot {
-  width: 8px; height: 8px; border-radius: 50%;
+  width: 10px; height: 10px;
+  border-radius: 0;
+  transition: var(--transition);
 }
-.status-dot.connected { background: var(--success); }
-.status-dot.disconnected { background: var(--danger); }
+.status-dot.connected {
+  background: #4ade80;
+  box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.25);
+}
+.status-dot.disconnected {
+  background: var(--text-muted);
+}
 
-/* Chat */
+/* ============================================================
+   CHAT
+   ============================================================ */
 main {
   flex: 1 1 0;
   overflow-y: auto;
-  padding: 16px;
+  padding: 24px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
   align-content: flex-start;
 }
 
 .message {
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  max-width: 85%;
-  line-height: 1.5;
-  font-size: 0.9rem;
+  padding: 12px 18px;
+  max-width: 80%;
+  line-height: 1.65;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
   white-space: pre-wrap;
   word-break: break-word;
   flex-shrink: 0;
+  animation: slide-in 0.5s ease-out both;
 }
+.message-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-shrink: 0;
+  animation: slide-in 0.5s ease-out both;
+}
+.message-row.user { justify-content: flex-end; }
+.message-row.assistant { justify-content: flex-start; }
 .message.user {
-  align-self: flex-end;
   background: var(--accent);
-  color: #fff;
+  color: var(--dark-text);
+  font-weight: 600;
 }
 .message.assistant {
-  align-self: flex-start;
   background: var(--surface);
-  border: 1px solid var(--border);
+  color: var(--text);
+  border-left: 3px solid var(--accent);
 }
 
-/* Widget */
+/* Copy button beside each message */
+.copy-btn {
+  flex-shrink: 0;
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px; height: 26px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: var(--transition);
+}
+.message-row.user .copy-btn {
+  transform: translateX(6px);
+  order: -1;
+}
+.message-row:hover .copy-btn,
+.copy-btn:focus-visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+.copy-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.copy-btn.copied {
+  opacity: 1;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.copy-icon { display: block; }
+
+/* ============================================================
+   WIDGET — hard offset shadow, accent corner strip
+   ============================================================ */
 .widget-container {
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
+  border: 1px solid #2a2a2a;
+  border-radius: 0;
   max-width: 100%;
   flex-shrink: 0;
+  position: relative;
+  box-shadow: var(--shadow-hard);
+  animation: slide-in 0.5s ease-out both;
+}
+/* Top-left 4px accent corner strip */
+.widget-container::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0;
+  width: 32px; height: 4px;
+  background: var(--accent);
+  z-index: 2;
 }
 .widget-container .widget-title {
-  font-size: 0.75rem; color: var(--muted);
-  padding: 6px 10px; border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; gap: 6px;
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--accent);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
 }
 .widget-info {
-  display: flex; gap: 8px; align-items: center;
-  padding: 6px 10px; font-size: 0.7rem;
+  display: flex; gap: 10px; align-items: center;
+  padding: 8px 14px;
+  font-family: var(--font-body);
+}
+.widget-info .widget-download {
+  margin-left: auto;
 }
 .widget-mode {
-  background: var(--accent); color: #fff;
-  padding: 1px 6px; border-radius: 4px; font-weight: 600;
+  background: var(--accent);
+  color: var(--dark-text);
+  padding: 2px 8px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
 }
-.widget-path { color: var(--muted); word-break: break-all; }
+.widget-path {
+  color: var(--text-muted);
+  word-break: break-all;
+  font-family: 'Courier New', monospace;
+  font-size: 0.78rem;
+}
+.widget-download {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px; height: 26px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: var(--transition);
+}
+.widget-download:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .widget-container .widget-frame {
   min-height: 120px;
-  max-height: 500px;
   overflow: hidden;
 }
 .widget-host {
   width: 100%;
   display: block;
-  /* Height is set dynamically by widgets.js to match shadow content. */
 }
 
 /* Live preview indicator */
 .live-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--accent); animation: pulse 1.5s infinite;
+  width: 8px; height: 8px;
+  border-radius: 0;
+  background: var(--accent);
+  animation: pulse 1.5s infinite;
 }
-.live-dot.finalized { background: var(--success); animation: none; }
-.live-preview { border-color: var(--accent); }
+.live-dot.finalized {
+  background: var(--text);
+  animation: none;
+}
+.live-preview {
+  border-color: var(--accent);
+}
+.live-preview::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(255, 77, 77, 0.3);
+  pointer-events: none;
+  z-index: 3;
+}
 @keyframes pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50% { opacity: 0.35; }
 }
 
-/* Thinking block */
+/* ============================================================
+   THINKING BLOCK
+   ============================================================ */
 .thinking-block {
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  max-width: 85%;
+  border-left: 3px solid var(--text-muted);
+  max-width: 80%;
   align-self: flex-start;
   overflow: hidden;
   flex-shrink: 0;
+  animation: slide-in 0.5s ease-out both;
 }
 .thinking-block summary {
-  padding: 8px 12px;
-  font-size: 0.8rem;
-  color: var(--muted);
+  padding: 10px 16px;
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
   cursor: pointer;
   user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.thinking-block summary:hover { color: var(--text); }
-.thinking-block[open] summary { border-bottom: 1px solid var(--border); }
+.thinking-block summary::-webkit-details-marker { display: none; }
+.thinking-block summary::before {
+  content: "▶";
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  transition: transform var(--transition);
+}
+.thinking-block[open] summary::before {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+.thinking-block summary:hover { color: var(--accent); }
+.thinking-block[open] summary {
+  border-bottom: 1px solid var(--border);
+}
 .thinking-content {
-  padding: 10px 12px;
-  font-size: 0.8rem;
-  color: var(--muted);
-  line-height: 1.5;
+  padding: 12px 16px;
+  font-family: var(--font-body);
+  font-size: 0.92rem;
+  color: var(--text-muted);
+  line-height: 1.65;
   max-height: 200px;
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  font-style: italic;
 }
 
-/* Tool call display */
+/* ============================================================
+   TOOL CALL
+   ============================================================ */
 .tool-call {
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  max-width: 85%;
+  border-left: 3px solid var(--text-muted);
+  max-width: 80%;
   align-self: flex-start;
   overflow: hidden;
   flex-shrink: 0;
+  animation: slide-in 0.5s ease-out both;
 }
 .tool-call summary {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px;
-  font-size: 0.8rem;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px;
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
   cursor: pointer;
   user-select: none;
   list-style: none;
+  color: var(--text);
 }
 .tool-call summary::-webkit-details-marker { display: none; }
 .tool-call summary::before {
   content: "▶";
   font-size: 0.6rem;
-  color: var(--muted);
-  transition: transform 0.15s;
+  color: var(--text-muted);
+  transition: transform var(--transition);
 }
 .tool-call[open] summary::before {
   transform: rotate(90deg);
+  color: var(--accent);
 }
-.tool-call summary:hover { background: var(--surface-2); }
-.tool-call-icon {
-  font-size: 0.9rem;
-}
-.tool-call-icon.success { color: var(--success); }
-.tool-call-icon.error { color: var(--danger); }
+.tool-call summary:hover { background: #222; }
+.tool-call-icon { font-size: 0.95rem; }
+.tool-call-icon.success { color: var(--accent); }
+.tool-call-icon.error { color: var(--text-muted); }
 .tool-call-name {
-  font-weight: 600; color: var(--text);
-  font-family: monospace;
+  font-weight: 600;
+  color: var(--text);
+  font-family: 'Courier New', monospace;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .tool-call-status {
   margin-left: auto;
-  color: var(--muted);
-  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
 }
-.tool-call-status.success { color: var(--success); }
-.tool-call-status.error { color: var(--danger); }
+.tool-call-status.success { color: var(--accent); }
+.tool-call-status.error { color: var(--text-muted); }
 .tool-call-params {
-  margin: 0; padding: 8px 12px;
-  background: var(--surface-2);
+  margin: 0;
+  padding: 12px 16px;
+  background: var(--bg);
   border-top: 1px solid var(--border);
-  font-size: 0.75rem;
-  color: var(--muted);
+  font-size: 0.8rem;
+  color: var(--text-muted);
   max-height: 150px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: monospace;
+  font-family: 'Courier New', monospace;
 }
 
-/* Loading */
+/* ============================================================
+   LOADING
+   ============================================================ */
 .loading {
-  display: flex; gap: 6px; align-items: center;
-  padding: 10px 14px; color: var(--muted); font-size: 0.85rem;
+  display: flex; gap: 10px; align-items: center;
+  padding: 12px 18px;
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
   flex-shrink: 0;
+  animation: slide-in 0.5s ease-out both;
 }
 .loading .dots span {
-  display: inline-block; width: 6px; height: 6px;
-  background: var(--muted); border-radius: 50%;
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 0;
+  background: var(--accent);
   animation: bounce 1.2s infinite;
 }
 .loading .dots span:nth-child(2) { animation-delay: 0.2s; }
@@ -234,29 +427,77 @@ main {
   40% { transform: translateY(-6px); }
 }
 
-/* Composer */
+/* ============================================================
+   COMPOSER
+   ============================================================ */
 #composer {
-  display: flex; gap: 8px; padding: 12px 16px;
+  display: flex; gap: 12px;
+  padding: 16px 24px;
+  background: var(--bg);
   border-top: 1px solid var(--border);
-  background: var(--surface);
   flex-shrink: 0;
 }
 #input {
-  flex: 1; background: var(--surface-2); color: var(--text);
-  border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 10px 12px; font-size: 0.9rem; resize: none;
-  font-family: inherit;
+  flex: 1;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-bottom: 2px solid #333;
+  padding: 10px 4px;
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 400;
+  resize: none;
+  transition: var(--transition);
 }
-#input:focus { outline: none; border-color: var(--accent); }
+#input::placeholder {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.85rem;
+}
+#input:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
 #composer button {
-  background: var(--accent); color: #fff; border: none;
-  border-radius: var(--radius); padding: 10px 20px;
-  font-size: 0.9rem; cursor: pointer; font-weight: 500;
+  background: var(--accent);
+  color: var(--dark-text);
+  border: none;
+  border-radius: var(--radius);
+  padding: 12px 32px;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  box-shadow: var(--shadow-hard);
+  transition: var(--transition);
 }
-#composer button:hover { background: var(--accent-hover); }
-#composer button:disabled { opacity: 0.5; cursor: not-allowed; }
+#composer button:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 rgba(255, 77, 77, 0.3);
+}
+#composer button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
 
-/* Scrollbar */
+/* ============================================================
+   SCROLLBAR
+   ============================================================ */
 ::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: #2a2a2a; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* ============================================================
+   ENTRANCE — snappy slide from left
+   ============================================================ */
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(-20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
