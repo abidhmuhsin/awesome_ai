@@ -58,8 +58,8 @@ OPENAI_API_KEY=sk-...
 # For OpenRouter: https://openrouter.ai/api/v1
 # API_BASE=https://openrouter.ai/api/v1
 
-# Optional: Model override (defaults to anthropic/claude-sonnet-4)
-MODEL_ID=anthropic/claude-sonnet-4
+# Optional: Model override (defaults to xiaomi/mimo-v2.5)
+MODEL_ID=xiaomi/mimo-v2.5
 
 # Optional: Server port (default: 3000)
 PORT=3000
