@@ -222,6 +222,11 @@ main {
   font-family: 'Courier New', monospace;
   font-size: 0.78rem;
 }
+.widget-elapsed {
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  font-family: 'Courier New', monospace;
+}
 .widget-download {
   flex-shrink: 0;
   display: flex;
