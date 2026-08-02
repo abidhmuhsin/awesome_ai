@@ -63,9 +63,10 @@ let currentAssistantDiv = null; // <div> we append text deltas into
 let currentText = "";           // accumulated assistant text this turn
 
 // --- Widget preview (delegated to widgets.js) ---
-//  `currentWidget` is the handle returned by widgets.startPreview(); it may
-//  be null if no show_visual call is in flight this turn.
-let currentWidget = null;
+//  A stack of in-flight widget previews. Each widget_stream_start pushes a
+//  new entry; tool_end(show_visual) pops the matching one. This lets
+//  multiple widgets stream concurrently without overwriting each other.
+let widgetStack = [];   // [{ widget }]
 
 // --- Thinking (reasoning) ---
 let thinkingDiv = null;
@@ -136,8 +137,11 @@ function connectSSE() {
     openToolCards.push({ name: toolName, details: card, startTime });
 
     // show_visual is executing → the streamed code is final; mark the title.
-    if (toolName === "show_visual" && currentWidget) {
-      currentWidget.markFinalizing(args?.title);
+    // No separate timer here — elapsed is computed from widget_stream_start
+    // in tool_end so it captures the full wait (streaming + save).
+    if (toolName === "show_visual") {
+      const entry = widgetStack[widgetStack.length - 1];
+      if (entry) entry.widget.markFinalizing(args?.title);
     }
   });
 
@@ -153,15 +157,20 @@ function connectSSE() {
     const entry = idx >= 0 ? openToolCards.splice(idx, 1)[0] : null;
     finishToolCard(entry?.details, isError, entry?.startTime);
 
-    // show_visual finished → swap the live preview for the saved file.
+    // show_visual finished → pop the matching widget and finalize it.
     if (toolName === "show_visual" && details?.filepath) {
-      if (currentWidget) {
-        currentWidget.finalize(details.title, details.mode, details.filepath);
+      const entry = widgetStack.pop();
+      if (entry) {
+        // Use the streaming start time (not tool_start) so the elapsed
+        // includes the full wait: LLM code generation + file save.
+        const elapsed = entry.startTime
+          ? ((Date.now() - entry.startTime) / 1000).toFixed(2)
+          : "?";
+        entry.widget.finalize(details.title, details.mode, details.filepath, elapsed);
       } else {
         // No live preview (events missed) → build a finished card from scratch.
         widgets.addFinishedWidget(chat, details.title, details.mode, details.filepath);
       }
-      currentWidget = null;
     }
   });
 
@@ -171,31 +180,34 @@ function connectSSE() {
   // JSON and sends the clean widget_code string each tick.
 
   evtSource.addEventListener("widget_stream_start", async () => {
-    if (!currentWidget) {
-      currentWidget = await widgets.startPreview(chat, "Building widget...");
-    }
+    const widget = await widgets.startPreview(chat, "Building widget...");
+    widgetStack.push({ widget, startTime: Date.now() });
   });
 
   evtSource.addEventListener("widget_stream_delta", (e) => {
     const { code } = JSON.parse(e.data);
-    if (currentWidget && typeof code === "string") {
-      currentWidget.update(code);
+    const top = widgetStack[widgetStack.length - 1];
+    if (top && typeof code === "string") {
+      top.widget.update(code);
     }
   });
 
   evtSource.addEventListener("widget_stream_end", (e) => {
     const { code, mode } = JSON.parse(e.data);
-    if (currentWidget) currentWidget.commit(code, mode);
+    const top = widgetStack[widgetStack.length - 1];
+    if (top) top.widget.commit(code, mode);
   });
 
   // ---- Turn complete: reset all per-turn state ----
+  // If a widget was streaming but never got its finalize (agent ended early,
+  // errored, or produced no show_visual result), abort it: partial renders
+  // stay visible but stop pulsing "BUILDING…"; empty cards are removed.
   evtSource.addEventListener("agent_end", () => {
     currentAssistantDiv = null;
     currentText = "";
-    if (currentWidget) {
-      currentWidget.destroy(); // cancel any pending rAF
-      currentWidget = null;
-    }
+    // Abort any widgets still in the stream (never got their tool_end).
+    for (const entry of widgetStack) entry.widget.abort();
+    widgetStack = [];
     thinkingDiv = null;
     thinkingText = "";
     openToolCards = [];
