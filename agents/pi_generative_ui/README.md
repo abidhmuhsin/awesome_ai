@@ -51,17 +51,18 @@ npm install
 Create a `.env` file (see `.env.example`):
 
 ```bash
-# Required: Your Anthropic API key
-ANTHROPIC_API_KEY=sk-ant-...
+# Required: Your OpenAI-compatible API key
+OPENAI_API_KEY=sk-...
 
-# Optional: Model override (defaults to claude-sonnet-4-20250514)
-MODEL=claude-sonnet-4-20250514
+# Optional: API base URL (defaults to https://api.openai.com/v1)
+# For OpenRouter: https://openrouter.ai/api/v1
+# API_BASE=https://openrouter.ai/api/v1
+
+# Optional: Model override (defaults to anthropic/claude-sonnet-4)
+MODEL_ID=anthropic/claude-sonnet-4
 
 # Optional: Server port (default: 3000)
 PORT=3000
-
-# Optional: Widget host port (default: 3001)
-WIDGET_PORT=3001
 ```
 
 ### 3. Start the server
