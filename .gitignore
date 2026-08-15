@@ -4,3 +4,6 @@ pi-session-*.html
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Demo/sandbox comparison harness (generated pages, not needed at runtime)
+.demo/
