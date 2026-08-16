@@ -135,7 +135,7 @@ const WIDGET_ORIGIN = process.env.WIDGET_ORIGIN || `http://localhost:${process.e
 // API key for the OpenAI-compatible endpoint configured by API_BASE.
 const API_KEY  = process.env.OPENAI_API_KEY;
 const API_BASE = process.env.API_BASE || "https://api.openai.com/v1";
-const MODEL_ID = process.env.MODEL_ID || "gpt-4o";
+const MODEL_ID = process.env.MODEL_ID || "xiaomi/mimo-v2.5";
 
 if (!API_KEY) {
   console.error("\n  ✗ No API key found. Set OPENAI_API_KEY in .env\n");
@@ -318,14 +318,15 @@ const MIME = {
   ".json": "application/json",
 };
 
+// Hostnames this server answers to. A foreign Host header (e.g. a
+// DNS-rebinding domain pointed at 127.0.0.1) is refused.
+const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
+
 const server = createServer(async (req, res) => {
-  // Permissive CORS — this is a local dev server.
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") {
-    res.writeHead(204);
-    return res.end();
+  // Everything the page fetches here is same-origin → no CORS headers needed.
+  if (!ALLOWED_HOSTS.has(req.headers.host || "")) {
+    res.writeHead(403);
+    return res.end("Forbidden");
   }
 
   // ---- Route: SSE stream ----
@@ -395,16 +396,46 @@ const server = createServer(async (req, res) => {
  *   B) tool_execution_* — the tool is ACTUALLY RUNNING (after args complete).
  *      These give us the final result (saved filepath) to finalize the widget.
  */
+/** Cap for POST bodies — a chat message is a few KB; anything bigger is abuse. */
+const MAX_BODY_BYTES = 1_000_000; // 1 MB
+
+// Guards against two overlapping prompt() calls interleaving on the shared session.
+let chatInFlight = false;
+
 async function handleChat(req, res) {
-  // Read & parse the request body (small JSON).
+  // Read & parse the request body (small JSON). Guarded on three fronts:
+  // oversize → 413, malformed → 400, and neither may reject the handler —
+  // an unhandled rejection here would kill the process (Node ≥15 default).
   let body = "";
-  for await (const chunk of req) body += chunk;
-  const { message } = JSON.parse(body);
+  let size = 0;
+  let message;
+  try {
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        res.writeHead(413, { "Content-Type": "application/json", Connection: "close" });
+        res.end(JSON.stringify({ error: "body too large" }));
+        res.on("finish", () => req.destroy()); // drop the rest of the upload
+        return;
+      }
+      body += chunk;
+    }
+    ({ message } = JSON.parse(body));
+  } catch {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ error: "invalid JSON body" }));
+  }
 
   if (!message) {
     res.writeHead(400, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ error: "message required" }));
   }
+
+  if (chatInFlight) {
+    res.writeHead(409, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ error: "agent is busy, try again shortly" }));
+  }
+  chatInFlight = true;
 
   try {
     log.info(`Received: ${c.white}"${message.length > 60 ? message.slice(0, 57) + "..." : message}"${c.reset}`);
@@ -424,6 +455,8 @@ async function handleChat(req, res) {
     log.request(req.method, req.url, 500);
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: err.message }));
+  } finally {
+    chatInFlight = false;
   }
 }
 
@@ -478,7 +511,7 @@ function translateAgentEvent(event) {
           const stripped = String(args.widget_code || "").trimStart().toLowerCase();
           const mode = stripped.startsWith("<svg") ? "svg" : "html";
           log.tool("show_visual/stream", "end", { mode, len: stripped.length });
-          broadcast("widget_stream_end", { code: args.widget_code || "", mode });
+          broadcast("widget_stream_end", { code: args.widget_code || "", mode, title: args.title });
         }
       }
       break;
@@ -545,7 +578,16 @@ async function serveFile(req, res, filePath) {
 //  §7  START SERVER
 // ============================================================================
 
-server.listen(PORT, () => {
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    log.error(`Port ${PORT} is already in use.`);
+    process.exit(1);
+  }
+  throw err;
+});
+
+// 127.0.0.1 only — keeps the agent (and its API key) off the LAN.
+server.listen(PORT, "127.0.0.1", () => {
   banner();
   log.success(`Server listening on ${c.bold}${c.white}http://localhost:${PORT}${c.reset}`);
   log.info(`Extensions:  ${c.white}.pi/extensions/${c.reset}`);

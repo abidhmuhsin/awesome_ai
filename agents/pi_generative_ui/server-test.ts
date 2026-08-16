@@ -18,7 +18,7 @@
  *  ENV  (read from .env next to this file, or the real environment)
  *  ----
  *    API_BASE        OpenAI-compatible endpoint  (default: https://api.openai.com/v1)
- *    MODEL_ID        Model id to register & call  (default: gpt-4o)
+ *    MODEL_ID        Model id to register & call  (default: xiaomi/mimo-v2.5)
  *    OPENAI_API_KEY  API key for the endpoint     (required)
  *
  *  KEY LEARNINGS baked into this file (read the §-comments inline):
@@ -63,7 +63,7 @@ try {
 
 const API_KEY = process.env.OPENAI_API_KEY;
 const API_BASE = process.env.API_BASE || "https://api.openai.com/v1";
-const MODEL_ID = process.env.MODEL_ID || "gpt-4o";
+const MODEL_ID = process.env.MODEL_ID || "xiaomi/mimo-v2.5";
 
 if (!API_KEY) {
 	console.error("✗ OPENAI_API_KEY is required (set it in .env or the environment).");
