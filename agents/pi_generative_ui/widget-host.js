@@ -20,7 +20,6 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const PORT = process.env.WIDGET_PORT || 3001;
 const EXPORTS_DIR = join(__dirname, "exports");
 
 const MIME = {
@@ -42,10 +41,31 @@ export function startWidgetHost() {
   if (started) return;
   started = true;
 
+  // Read config here, not at module top: server.js loads .env after imports
+  // evaluate, so module-level reads would miss WIDGET_PORT/PORT from .env.
+  const PORT = process.env.WIDGET_PORT || 3001;
+  const APP_PORT = process.env.PORT || 3000;
+
+  // Only the app page (served from APP_PORT) may read files cross-origin.
+  const ALLOWED_ORIGINS = new Set([
+    `http://localhost:${APP_PORT}`,
+    `http://127.0.0.1:${APP_PORT}`,
+  ]);
+  const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
+
   const server = createServer(async (req, res) => {
-    // Permissive CORS — the host page fetches saved widget files from here.
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    // Foreign Host = DNS-rebinding probe → refuse.
+    if (!ALLOWED_HOSTS.has(req.headers.host || "")) {
+      res.writeHead(403);
+      return res.end("forbidden");
+    }
+
+    // CORS: echo the origin only if it's the app page — never "*".
+    const origin = req.headers.origin;
+    if (origin && ALLOWED_ORIGINS.has(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    }
     if (req.method === "OPTIONS") {
       res.writeHead(204);
       return res.end();
@@ -76,7 +96,16 @@ export function startWidgetHost() {
     }
   });
 
-  server.listen(PORT, () => {
+  server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`  ✗ Widget host port ${PORT} is already in use.`);
+      return;
+    }
+    throw err;
+  });
+
+  // 127.0.0.1 only — saved widgets are not for the LAN.
+  server.listen(PORT, "127.0.0.1", () => {
     console.log(`  🔒 Widget host (saved-file server): http://localhost:${PORT}`);
   });
 }

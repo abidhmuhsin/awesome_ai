@@ -163,6 +163,7 @@ const visualInstructionsTool = defineTool({
         "Ensure text fits at mobile and desktop widths.",
         "Scripts may be included in HTML widgets and should be self-contained.",
         "A global sendPrompt(text) function may be called from user-triggered events.",
+        "Use openLink(url) for outbound links, <a target=\"_blank\"> or window.open() gets blocked.",
         // --- Streaming-friendly authoring (content streams in token by token) ---
         "Order code for streaming: <style> first, visible SVG/HTML next, <script> last.",
         "Prefer inline styles over <style> blocks for controls (they apply mid-stream).",

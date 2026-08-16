@@ -127,6 +127,16 @@ main {
   border-left: 3px solid var(--accent);
 }
 
+.widget-origin-tag {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  margin-bottom: 2px;
+}
+
 /* Copy button beside each message */
 .copy-btn {
   flex-shrink: 0;

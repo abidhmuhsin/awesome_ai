@@ -40,7 +40,9 @@ function escapeHtml(str) {
   return String(str)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 // Auto-grow the textarea as the user types, up to a max height.
@@ -193,9 +195,9 @@ function connectSSE() {
   });
 
   evtSource.addEventListener("widget_stream_end", (e) => {
-    const { code, mode } = JSON.parse(e.data);
+    const { code, mode, title } = JSON.parse(e.data);
     const top = widgetStack[widgetStack.length - 1];
-    if (top) top.widget.commit(code, mode);
+    if (top) top.widget.commit(code, mode, title);
   });
 
   // ---- Turn complete: reset all per-turn state ----
@@ -227,19 +229,14 @@ connectSSE();
 widgets.initWidgetOrigin();
 
 // Wire the widget bridge: when a sandboxed widget calls sendPrompt(text),
-// treat it like the user typed it and run a new agent turn.
+// run a new agent turn — but tag it as widget-originated, both in the UI
+// (visible badge) and to the model (prefix), so it's never indistinguishable
+// from something the human actually typed.
 widgets.onWidgetPrompt((text) => {
   if (!text || sending) return;
-  addMessageEl("user", text);
+  addMessageEl("user", text, true);
   setSending(true);
-  fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message: text }),
-  }).catch((err) => {
-    addMessageEl("assistant", `❌ Error: ${err.message}`);
-    setSending(false);
-  });
+  sendChat(`[widget] ${text}`);
 });
 
 
@@ -252,14 +249,24 @@ function setStatus(status) {
   statusDot.className = `status-dot ${status}`;
 }
 
-/** Append a user/assistant message bubble and return the element. */
-function addMessageEl(role, text) {
+/**
+ * Append a user/assistant message bubble and return the element.
+ * `fromWidget` marks messages that came from a widget's sendPrompt(), not
+ * the human typing — tagged visibly so it's never mistaken for real input.
+ */
+function addMessageEl(role, text, fromWidget = false) {
   const wrap = document.createElement("div");
   wrap.className = `message-row ${role}`;
 
   const div = document.createElement("div");
   div.className = `message ${role}`;
-  div.textContent = text; // safe: no HTML parsing
+  if (fromWidget) {
+    const tag = document.createElement("span");
+    tag.className = "widget-origin-tag";
+    tag.textContent = "via widget";
+    div.appendChild(tag);
+  }
+  div.appendChild(document.createTextNode(text)); // safe: no HTML parsing
 
   const btn = document.createElement("button");
   btn.className = "copy-btn";
@@ -268,7 +275,7 @@ function addMessageEl(role, text) {
   btn.setAttribute("aria-label", "Copy message");
   btn.innerHTML = `<svg class="copy-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4h8v8H4z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3h8" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`;
   btn.addEventListener("click", () => {
-    navigator.clipboard.writeText(div.textContent || "").then(() => {
+    navigator.clipboard.writeText(text || "").then(() => {
       btn.classList.add("copied");
       btn.innerHTML = `<svg class="copy-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
       setTimeout(() => {
@@ -351,9 +358,34 @@ function setSending(val) {
   form.querySelector("button").disabled = val;
 }
 
+/**
+ * POST a message to the agent. Never throws — on an HTTP error or network
+ * failure the error is shown and the composer is re-enabled. Without the
+ * res.ok check, a 4xx/5xx would leave "sending" stuck (fetch doesn't reject
+ * on bad statuses, and no agent_end SSE event is guaranteed to arrive).
+ */
+function sendChat(message) {
+  fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { detail = (await res.json()).error || detail; } catch {}
+        throw new Error(detail);
+      }
+    })
+    .catch((err) => {
+      addMessageEl("assistant", `❌ Error: ${err.message}`);
+      setSending(false);
+    });
+}
+
 // Submit handler: send the message, let SSE drive the rest. We don't await a
 // response body — the server replies 200 immediately and output streams via SSE.
-form.addEventListener("submit", async (e) => {
+form.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = input.value.trim();
   if (!text || sending) return;
@@ -362,17 +394,7 @@ form.addEventListener("submit", async (e) => {
   input.value = "";
   input.style.height = "auto";
   setSending(true);
-
-  try {
-    await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text }),
-    });
-  } catch (err) {
-    addMessageEl("assistant", `❌ Error: ${err.message}`);
-    setSending(false);
-  }
+  sendChat(text);
 });
 
 // Enter sends; Shift+Enter inserts a newline.

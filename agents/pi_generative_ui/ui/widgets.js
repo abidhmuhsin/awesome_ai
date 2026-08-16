@@ -74,6 +74,12 @@ const CSP_DIRECTIVES = [
   `img-src 'self' data: ${CDN_LIST}`,
   `font-src ${CDN_LIST}`,
   `connect-src ${CDN_LIST}`,
+  // Widgets never need to submit forms anywhere or redirect relative URLs —
+  // they talk back to the host via postMessage. Deny both outright so
+  // allow-forms in the sandbox can't be used to exfiltrate via navigation.
+  "form-action 'none'",
+  "base-uri 'none'",
+  "object-src 'none'",
 ].join("; ");
 
 /**
@@ -83,6 +89,9 @@ const CSP_DIRECTIVES = [
  * one innerHTML write per RENDER_INTERVAL ms.
  */
 const RENDER_INTERVAL = 50;
+
+/** Cap for self-reported iframe height (px) — generous but bounded. */
+const MAX_WIDGET_HEIGHT = 4000;
 
 // The bridge script injected into every widget iframe. Defines sendPrompt,
 // openLink, window.storage, and an event-driven height reporter — all
@@ -129,10 +138,22 @@ const BRIDGE_SCRIPT = `
   } catch (e) {}
 
   // ---- sendPrompt(text) → new agent turn ----
-  window.sendPrompt = function (text) { send("sendPrompt", { text: String(text) }); };
+  // Only forward if called synchronously from a real user gesture (click,
+  // keypress) — blocks a widget auto-firing prompts from a <script> on load.
+  window.sendPrompt = function (text) {
+    var ev = window.event;
+    if (!ev || ev.isTrusted !== true) return;
+    send("sendPrompt", { text: String(text) });
+  };
 
   // ---- openLink(url) → host opens it (no popups in sandbox) ----
-  window.openLink = function (url) { send("openLink", { url: String(url) }); };
+  // Like sendPrompt: only from a real user gesture — a prompt-injected
+  // script can't silently pop tabs.
+  window.openLink = function (url) {
+    var ev = window.event;
+    if (!ev || ev.isTrusted !== true) return;
+    send("openLink", { url: String(url) });
+  };
 
   // ---- window.storage → async KV via postMessage ----
   function storageOp(type, key, value) {
@@ -339,6 +360,7 @@ export async function addFinishedWidget(parent, title, mode, filepath) {
   const preview = new WidgetPreview(card);
   preview._wireBridge();
   preview._markFinalized();   // no live phase — start in finalized state
+  preview._title = title;
   const origin = await getWidgetOrigin();
   const filename = filepath.split("/").pop();
   try {
@@ -365,6 +387,7 @@ class WidgetPreview {
     this.wrapper     = card.wrapper;
     this._code     = "";
     this._mode     = null;
+    this._title    = null;   // namespaces window.storage keys; set at commit/finalize
     this._finalized = false;
     this._aborted  = false;
     this._bridgeHandler = null;
@@ -405,10 +428,13 @@ class WidgetPreview {
   }
 
   /** Commit final code + render once authoritatively so <script> runs. */
-  commit(code, mode) {
+  commit(code, mode, title) {
     if (this._finalized || this._aborted) return;
     if (typeof code === "string" && code) this._code = code;
     if (mode) this._mode = mode;
+    // Set before running scripts so window.storage calls made on this first
+    // script pass are namespaced under the real widget title, not "untitled".
+    if (title) this._title = title;
     // Cancel any pending throttled render — the commit is authoritative.
     this._cancelStreamRender();
     // Final full render, then execute <script> tags exactly once.
@@ -421,6 +447,7 @@ class WidgetPreview {
     if (this._finalized || this._aborted) return;
     this._markFinalized();
     this._cancelStreamRender();
+    this._title = title;
     this.titleBar.textContent = title;
     this.container.insertBefore(
       buildInfoBar(mode, filepath, elapsed),
@@ -455,6 +482,8 @@ class WidgetPreview {
     if (this._finalized || this._aborted) return;
     this._aborted = true;
     this._cancelStreamRender();
+    // Never finalized, so never interactive — safe to stop listening.
+    this.destroy();
     // If we never rendered visible content, hide the card entirely.
     if (!this._code || !this._code.trim()) {
       this.container.remove();
@@ -564,20 +593,23 @@ class WidgetPreview {
     const p = d.payload || {};
 
     if (t === "height" && typeof p.height === "number") {
-      // Apply reported height to BOTH the iframe and its wrapper so the
-      // two-div placeholder/wrapper keeps layout space reserved while the
-      // wrapper animates to the new height.
-      this.iframe.style.height = p.height + "px";
-      this.wrapper.style.height = p.height + "px";
+      // Clamp: a hostile/broken widget can't blow up page layout by
+      // self-reporting a huge height.
+      const height = Math.max(0, Math.min(p.height, MAX_WIDGET_HEIGHT));
+      this.iframe.style.height = height + "px";
+      this.wrapper.style.height = height + "px";
       const chat = document.getElementById("chat");
       if (chat) chat.scrollTop = chat.scrollHeight;
     } else if (t === "sendPrompt") {
       handleWidgetPrompt(p.text);
     } else if (t === "openLink") {
-      if (p.url) window.open(p.url, "_blank", "noopener");
+      // http(s) only — blocks javascript:, data:, file:, and custom
+      // protocol schemes from running with host privileges.
+      const u = String(p.url || "");
+      if (/^https?:\/\//i.test(u)) window.open(u, "_blank", "noopener,noreferrer");
     } else if (t === "storage-get" || t === "storage-set" || t === "storage-delete") {
       let value, error;
-      try { value = widgetStorageOp(t, p.key, p.value); }
+      try { value = widgetStorageOp(t, this._title || "untitled", p.key, p.value); }
       catch (err) { error = err.message; }
       this.iframe.contentWindow.postMessage(
         { __bridge: "widget-bridge", type: "storage-response", id: p.id, value, error },
@@ -591,15 +623,19 @@ class WidgetPreview {
 // ----------------------------------------------------------------------------
 //  In-memory widget storage (per page session)
 // ----------------------------------------------------------------------------
+//  Keys are namespaced by widget title so different widgets can't read or
+//  clobber each other's data, while regenerating the SAME widget (same
+//  title) still sees its own prior state — that's the persistence use case.
 
 const widgetStore = new Map();
-function widgetStorageOp(type, key, value) {
+function widgetStorageOp(type, namespace, key, value) {
+  const scopedKey = `${namespace}::${key}`;
   if (type === "storage-get") {
-    if (!widgetStore.has(key)) throw new Error("key not found: " + key);
-    return widgetStore.get(key);
+    if (!widgetStore.has(scopedKey)) throw new Error("key not found: " + key);
+    return widgetStore.get(scopedKey);
   }
-  if (type === "storage-set") { widgetStore.set(key, value); return undefined; }
-  if (type === "storage-delete") { widgetStore.delete(key); return undefined; }
+  if (type === "storage-set") { widgetStore.set(scopedKey, value); return undefined; }
+  if (type === "storage-delete") { widgetStore.delete(scopedKey); return undefined; }
   return undefined;
 }
 
@@ -642,7 +678,9 @@ function buildCard(title) {
   iframe.setAttribute("title", "widget preview");
   // NO allow-same-origin → null origin → fully isolated from the host page.
   iframe.setAttribute("sandbox", "allow-scripts allow-forms");
-  iframe.setAttribute("allow", "fullscreen *; clipboard-write *");
+  // No clipboard-write: nothing bridges it, and it would let any click in a
+  // widget overwrite the host's clipboard — an ungated escape from the card.
+  iframe.setAttribute("allow", "fullscreen *");
   // Cap width to the widget content (800px + inner padding) so the iframe's
   // scrollbar hugs the widget instead of stretching across the full card.
   iframe.style.cssText =
@@ -740,5 +778,7 @@ function escapeHtml(str) {
   return String(str)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
