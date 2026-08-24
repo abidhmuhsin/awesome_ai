@@ -1436,13 +1436,83 @@
     // left on the browser's default white. The live iframe passes no theme — it
     // stays transparent (blends into the card surface) and is themed at runtime
     // via postMessage (THEME_CHANGE), which a parentless downloaded file can't get.
+    // ── Null-origin stream shell (pi_generative_ui model) ───────────
+    // The srcdoc shell is loaded once per card: CSP allowlist, theme tokens,
+    // the bridge script, and an empty #viewport. Streaming deltas arrive via
+    // postMessage ({type:'STREAM_BODY', html}) and set viewport.innerHTML —
+    // innerHTML does not execute <script> tags, so partial renders are cheap
+    // and flicker-free (no document reload). At finalize the host sends the
+    // full doc via srcdoc once, which runs scripts authoritatively.
+    const STREAM_CDN = [
+      'https://esm.sh',
+      'https://cdnjs.cloudflare.com',
+      'https://cdn.jsdelivr.net',
+      'https://unpkg.com',
+    ].join(' ')
+
+    function buildStreamShell() {
+      return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'unsafe-inline' data:; script-src 'unsafe-inline' ${STREAM_CDN}; style-src 'unsafe-inline' ${STREAM_CDN}; img-src * data: blob:; font-src ${STREAM_CDN}; connect-src ${STREAM_CDN}; form-action 'none'">
+  <style>
+    :root {
+      --bg: #0f0f0f; --surface: #1a1a1a; --text: #ffffff; --text-muted: #666666;
+      --accent: #ff4d4d; --accent-hover: #ff2020; --border: rgba(255,255,255,0.08); --radius: 4px;
+    }
+    [data-theme="light"] {
+      --bg: #f5f5f5; --surface: #ffffff; --text: #111111; --text-muted: #888888;
+      --accent: #cc3333; --accent-hover: #aa2222; --border: rgba(0,0,0,0.08);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; min-height: 0; font-family: 'Barlow', sans-serif; background: transparent; color: var(--text); line-height: 1.65; }
+    body { padding: 16px; }
+    svg { display: block; width: 100%; height: auto; max-width: 100%; overflow: visible; }
+  </style>
+  <script>
+    var ready = false, pendingBody = null
+    window.addEventListener('message', function (e) {
+      var d = e.data
+      if (!d || typeof d !== 'object') return
+      if (d.type === 'STREAM_BODY' && !finalized) {
+        var v = document.getElementById('viewport')
+        if (!v) return
+        v.innerHTML = d.html
+        reportHeight()
+      } else if (d.type === 'THEME_CHANGE') {
+        document.documentElement.setAttribute('data-theme', d.theme)
+      }
+    })
+    var finalized = false, lastHeight = 0, timer = null
+    function reportHeight() {
+      var h = document.body ? (document.body.offsetHeight || document.documentElement.offsetHeight) : 0
+      if (h > 0 && h !== lastHeight) { lastHeight = h; window.parent.postMessage({ type: 'WIDGET_RESIZE', height: h }, '*') }
+    }
+    function schedule() { if (timer) clearTimeout(timer); timer = setTimeout(function () { timer = null; reportHeight() }, 60) }
+    window.addEventListener('load', function () {
+      ready = true
+      reportHeight()
+      new MutationObserver(schedule).observe(document.body, { subtree: true, childList: true, attributes: true })
+      new ResizeObserver(schedule).observe(document.documentElement)
+      window.parent.postMessage({ type: 'SHELL_READY' }, '*')
+    })
+  <\/script>
+</head>
+<body><div id="viewport"></div></body>
+</html>`
+    }
+
     function buildIframePage(widgetCode, theme) {
       const themeAttr = theme ? ` data-theme="${theme}"` : ''
+      // Final render doc: null-origin sandbox (set on the iframe element) plus
+      // CSP allowlist — same hardening as the stream shell.
       return `<!DOCTYPE html>
 <html${themeAttr}>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'unsafe-inline' data:; script-src 'unsafe-inline' ${STREAM_CDN}; style-src 'unsafe-inline' ${STREAM_CDN}; img-src * data: blob:; font-src ${STREAM_CDN}; connect-src ${STREAM_CDN}; form-action 'none'">
   <style>
     :root {
       --bg: #0f0f0f;
@@ -1534,7 +1604,7 @@
           rafId: null,
           pendingRender: null,
           lastRenderTime: 0,
-          iframeReady: false,
+          shellReady: false,
           pendingPreview: null,
           hasContent: false,
         }
@@ -1620,19 +1690,19 @@
       })
     }
 
-    // Write the partial widget HTML into the sandboxed iframe's body. Buffers
-    // the latest partial until the scaffold srcdoc has loaded (contentDocument
-    // is null before load), then applies it once. innerHTML-inserted scripts
-    // don't run — that's fine for a preview; the final srcdoc at finalize runs
-    // them authoritatively.
+    // Write the partial widget HTML into the null-origin shell via postMessage.
+    // The shell sets viewport.innerHTML — innerHTML-inserted scripts don't run,
+    // which is correct for a preview; finalize's srcdoc runs them
+    // authoritatively. Buffers the latest partial until the shell signals
+    // SHELL_READY (bridge evaluated).
     function writePreview(card, htmlContent) {
       if (card.finalized) return                   // stale render after finalize — drop it
       if (!htmlContent || !htmlContent.trim()) return
-      const doc = card.iframe.contentDocument
-      if (card.iframeReady && doc && doc.body) {
-        doc.body.innerHTML = htmlContent
+      if (card.shellReady) {
+        card.iframe.contentWindow.postMessage({ type: 'STREAM_BODY', html: htmlContent }, '*')
         card.hasContent = true
-        sizeStreamIframe(card)
+        // Height arrives back via WIDGET_RESIZE; nothing to measure here (the
+        // frame is null-origin — contentDocument is null by design).
       } else {
         card.pendingPreview = htmlContent
       }
@@ -1670,23 +1740,16 @@
       })
     }
 
+    // Stream cards are sized from the shell's self-reported WIDGET_RESIZE
+    // messages (the frame is null-origin — the parent cannot measure it).
+    // sizeStreamIframe now only applies a floor for the empty "BUILDING…" box;
+    // actual heights arrive via the message router.
     function sizeStreamIframe(card) {
-      const doc = card.iframe.contentDocument
-      if (!doc || !doc.body) return
-      // Save scroll state: the collapse below changes the chat's scrollHeight
-      // mid-tick, which lets the browser clamp scrollTop away from where it
-      // was (yanking the view toward the top). We restore it after.
+      if (card.finalized) return
+      if (card.hasContent) return
       const wasNearBottom = isNearBottom()
       const prevScrollTop = chatEl.scrollTop
-
-      card.iframe.style.height = '0px'
-      const h = doc.body.scrollHeight || doc.body.offsetHeight || 0
-      const min = card.finalized ? 0 : 48
-      card.iframe.style.height = Math.max(h, min) + 'px'
-
-      // Undo the mid-tick clamp (hold the exact prior position), then glide
-      // smoothly toward the new bottom instead of snapping every frame. All
-      // synchronous, so no paint ever occurs at height 0.
+      card.iframe.style.height = '48px'
       chatEl.scrollTop = prevScrollTop
       if (wasNearBottom) scheduleScrollEase()
     }
@@ -1716,13 +1779,15 @@
       header.appendChild(downloadBtn)
       cardEl.appendChild(header)
 
-      // The iframe is the live preview surface — sandboxed from the first
-      // delta. Partial widget HTML is written to its body during streaming; the
-      // authoritative final render (scripts running) is set via srcdoc in
-      // finalizeCard. The empty scaffold is loaded once up front.
+      // The iframe is the live preview surface — a NULL-ORIGIN sandbox (no
+      // allow-same-origin), hardened with pi_generative_ui's model: the srcdoc
+      // shell (CSP allowlist + bridge script) is loaded ONCE, streaming deltas
+      // are delivered via postMessage into the shell's viewport, and the final
+      // authoritative render (scripts re-executed via the clone trick) happens
+      // in finalizeCard. The host can never touch the widget DOM.
       const iframe = document.createElement('iframe')
       iframe.title = 'widget: ' + card.title
-      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
+      iframe.sandbox = 'allow-scripts allow-forms'
       iframe.setAttribute('scrolling', 'no')
       iframe.allow = 'fullscreen *; clipboard-write *'
       iframe.classList.add('widget-stream-iframe')
@@ -1750,20 +1815,14 @@
       card.pendingPreview = null
       card.hasContent = false
 
-      // Buffer any preview that arrives before the scaffold loads, then apply.
-      // On a plain load (empty scaffold, or the finalize srcdoc reload) size
-      // directly — the parent owns stream-card height.
+      // Buffer any preview that arrives before the shell signals SHELL_READY
+      // (bridge evaluated). The load event alone is not enough — postMessage
+      // delivery only works once the shell's message listener exists. The
+      // router handles SHELL_READY and flushes pendingPreview.
       iframe.addEventListener('load', () => {
-        card.iframeReady = true
-        if (!card.finalized && card.pendingPreview != null) {
-          const pending = card.pendingPreview
-          card.pendingPreview = null
-          writePreview(card, pending)
-        } else {
-          sizeStreamIframe(card)
-        }
+        if (card.finalized) return
       })
-      iframe.srcdoc = buildIframePage('')
+      iframe.srcdoc = buildStreamShell()
 
       if (isNearBottom()) scrollToBottom()
       else notifyNewContent()
@@ -1778,7 +1837,7 @@
         card = {
           kind: 'stream', toolUseId, title: 'widget', accumulatedJson: '',
           finalized: false, rafId: null, pendingRender: null, lastRenderTime: 0,
-          iframeReady: false, pendingPreview: null, hasContent: false,
+          shellReady: false, pendingPreview: null, hasContent: false,
         }
         cards.set(toolUseId, card)
         buildStreamCardDom(card)
@@ -1848,6 +1907,9 @@
 
       const iframe = document.createElement('iframe')
       iframe.title = 'mcp-ui: ' + tool
+      // The OUTER frame here is the trusted proxy (needs same-origin with the
+      // host for postMessage handshake) — the hardening lives inside: the
+      // proxy's inner widget frame is null-origin (see sandbox.js).
       iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
       iframe.setAttribute('scrolling', 'no')
       iframe.classList.add('mcp-ui-sandbox')
@@ -1916,20 +1978,36 @@
       if (!card) return
 
       switch (msg.type) {
+        case 'SHELL_READY':
+          // The null-origin stream shell's bridge evaluated — flush any
+          // preview buffered before the shell could receive postMessages.
+          if (card.kind === 'stream') {
+            card.shellReady = true
+            if (card.pendingPreview != null) {
+              const pending = card.pendingPreview
+              card.pendingPreview = null
+              writePreview(card, pending)
+            }
+          }
+          break
         case 'WIDGET_RESIZE':
         case 'MCP_UI_RESIZE':
-          // Stream cards are sized by the parent (sizeStreamIframe) — ignore
-          // the scaffold's own reports, which measure at the live height and
-          // can feed back. Static proxy cards still size from these messages.
-          if (card.kind === 'stream') break
-          card.iframe.style.height = msg.height + 'px'
-          if (card.placeholder) card.placeholder.classList.add('loaded')
-          requestAnimationFrame(() => {
+          // All widget-bearing frames (stream shell + static proxy inner)
+          // self-report height — null-origin frames cannot be measured from
+          // outside. Apply change-only with a floor while building.
+          {
+            const min = card.kind === 'stream' && !card.finalized ? 48 : 0
+            const h = Math.max(Number(msg.height) || 0, min)
+            card.iframe.style.height = h + 'px'
+            if (card.kind === 'stream') card.hasContent = card.hasContent || h > 48
+            if (card.placeholder) card.placeholder.classList.add('loaded')
             requestAnimationFrame(() => {
-              if (isNearBottom()) scrollToBottom()
-              else notifyNewContent()
+              requestAnimationFrame(() => {
+                if (isNearBottom()) scrollToBottom()
+                else notifyNewContent()
+              })
             })
-          })
+          }
           break
         case 'WIDGET_SEND_PROMPT':
           inputEl.value = msg.text

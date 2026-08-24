@@ -26,7 +26,10 @@ export async function startWebSocket(port = 3000) {
 
   // Sandbox HTML needs CSP headers — serve before static middleware
   app.get('/sandbox.html', (_req, res) => {
-    res.setHeader('Content-Security-Policy', "default-src 'self' 'unsafe-inline' 'unsafe-eval'")
+    // Tightened: the proxy page runs only sandbox.js — no eval needed.
+    // 'unsafe-eval' previously let injected content eval() inside the proxy
+    // (same-origin with the host), which undermined the sandbox boundary.
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
     res.sendFile(path.join(uiDir, 'sandbox.html'))
   })
