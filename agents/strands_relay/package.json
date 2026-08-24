@@ -1,0 +1,32 @@
+{
+  "name": "visual-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/cli.ts",
+    "ui": "tsx src/ui-server.ts",
+    "mcp-server": "tsx src/mcp/mcp-server.ts",
+    "mcp-server:http": "tsx src/mcp/mcp-server.ts --http",
+    "mcp-server:sse": "tsx src/mcp/mcp-server.ts --sse",
+    "telegram": "tsx src/telegram.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
+    "@strands-agents/sdk": "latest",
+    "@types/express": "^5.0.6",
+    "@types/ws": "^8.18.1",
+    "dotenv": "latest",
+    "express": "^5.2.1",
+    "grammy": "^1.43.0",
+    "openai": "latest",
+    "ws": "^8.18.2",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}

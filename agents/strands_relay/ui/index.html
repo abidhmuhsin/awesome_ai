@@ -1,0 +1,2015 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:           #0f0f0f;
+      --surface:      #1a1a1a;
+      --text:         #ffffff;
+      --text-muted:   #666666;
+      --accent:       #ff4d4d;
+      --accent-hover: #ff2020;
+      --white-bg:     #f5f5f5;
+      --dark-text:    #111111;
+      --border:       rgba(255,255,255,0.08);
+      --shadow-hard:  4px 4px 0 rgba(255,77,77,0.3);
+      --shadow-hard-hover: 6px 6px 0 rgba(255,77,77,0.5);
+      --user-bg:      #ff4d4d;
+      --agent-bg:     #1a1a1a;
+      --error-bg:     #8b0000;
+      --copy-btn-bg:  rgba(255,255,255,0.08);
+      --copy-btn-hover: rgba(255,255,255,0.16);
+      --copy-btn-stroke: var(--text-muted);
+      --tool-body-bg: rgba(0,0,0,0.2);
+      --tool-body-text: rgba(255,255,255,0.6);
+      --grid-opacity: 0.04;
+      --diagonal-opacity: 0.5;
+      --watermark-opacity: 0.03;
+      --input-border: #333;
+      --font-display: 'Bebas Neue', sans-serif;
+      --font-body:    'Barlow', sans-serif;
+      --transition:   0.25s ease-out;
+    }
+
+    [data-theme="light"] {
+      --bg:           #f5f5f5;
+      --surface:      #ffffff;
+      --text:         #111111;
+      --text-muted:   #888888;
+      --accent:       #cc3333;
+      --accent-hover: #aa2222;
+      --white-bg:     #e0e0e0;
+      --dark-text:    #ffffff;
+      --border:       rgba(0,0,0,0.08);
+      --shadow-hard:  4px 4px 0 rgba(204,51,51,0.2);
+      --shadow-hard-hover: 6px 6px 0 rgba(204,51,51,0.35);
+      --user-bg:      #cc3333;
+      --agent-bg:     #ffffff;
+      --error-bg:     #dc2626;
+      --copy-btn-bg:  rgba(0,0,0,0.06);
+      --copy-btn-hover: rgba(0,0,0,0.12);
+      --copy-btn-stroke: #999999;
+      --tool-body-bg: rgba(0,0,0,0.04);
+      --tool-body-text: rgba(0,0,0,0.65);
+      --grid-opacity: 0.06;
+      --diagonal-opacity: 0.4;
+      --watermark-opacity: 0.04;
+      --input-border: #ccc;
+    }
+
+    html, body { height: 100%; }
+
+    body {
+      font-family: var(--font-body);
+      font-weight: 400;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* ── Watermark background ─────────────────────────────────────── */
+    .watermark {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-family: var(--font-display);
+      font-size: 12rem;
+      text-transform: uppercase;
+      color: var(--text);
+      opacity: 0.03;
+      white-space: nowrap;
+      pointer-events: none;
+      z-index: 0;
+      user-select: none;
+    }
+
+    /* ── Vertical accent stripe ───────────────────────────────────── */
+    .accent-stripe {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+      background: var(--accent);
+      z-index: 100;
+    }
+
+    /* ── Header ───────────────────────────────────────────────────── */
+    header {
+      padding: 20px 32px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      background: var(--bg);
+      position: relative;
+      z-index: 10;
+      animation: slideIn 0.5s ease-out forwards;
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(-20px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    header .logo {
+      font-family: var(--font-display);
+      font-size: 1.8rem;
+      letter-spacing: 0.04em;
+      color: var(--accent);
+    }
+
+    header h1 {
+      font-family: var(--font-display);
+      font-size: 1.4rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-weight: 400;
+    }
+
+    header .status {
+      margin-left: auto;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    header .dot {
+      width: 8px; height: 8px;
+      border-radius: 2px;
+      background: var(--text-muted);
+      transition: all var(--transition);
+    }
+
+    header .dot.connected {
+      background: #22c55e;
+      box-shadow: 0 0 0 2px rgba(34,197,94,0.3);
+    }
+
+    /* ── Chat area ────────────────────────────────────────────────── */
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 32px 40px;
+      padding-left: 44px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      position: relative;
+      z-index: 5;
+    }
+
+    #jump-to-latest {
+      position: fixed;
+      left: 50%;
+      bottom: 96px;
+      transform: translateX(-50%) translateY(8px);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      font-family: var(--font-body);
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      box-shadow: var(--shadow-hard);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity var(--transition), transform var(--transition);
+      z-index: 30;
+    }
+
+    #jump-to-latest.visible {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+      pointer-events: auto;
+    }
+
+    #jump-to-latest:hover {
+      background: var(--accent-hover);
+    }
+
+    #jump-to-latest .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: rgba(0,0,0,0.25);
+      font-size: 11px;
+      line-height: 1;
+    }
+
+    #jump-to-latest .arrow {
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    #chat::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #chat::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    #chat::-webkit-scrollbar-thumb {
+      background: var(--text-muted);
+    }
+
+    .msg {
+      max-width: 720px;
+      width: fit-content;
+      padding: 14px 18px;
+      border-radius: var(--radius);
+      line-height: 1.65;
+      font-size: 0.95rem;
+      font-weight: 400;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      animation: messageIn 0.5s ease-out forwards;
+      opacity: 0;
+    }
+
+    @keyframes messageIn {
+      from { opacity: 0; transform: translateX(-20px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .msg.user {
+      align-self: flex-end;
+      background: var(--user-bg);
+      color: var(--text);
+      font-weight: 600;
+      border-bottom-right-radius: 0;
+      box-shadow: var(--shadow-hard);
+    }
+
+    .msg.agent {
+      align-self: flex-start;
+      background: var(--agent-bg);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 0;
+    }
+
+    .msg.system {
+      align-self: center;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      padding: 12px 0;
+    }
+
+    .msg.error {
+      align-self: center;
+      background: var(--error-bg);
+      color: var(--text);
+      font-size: 0.85rem;
+      font-weight: 600;
+      border: 1px solid rgba(255,77,77,0.3);
+    }
+
+    /* ── Copy button ──────────────────────────────────────────────── */
+    .msg {
+      position: relative;
+    }
+
+    .copy-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 28px;
+      height: 28px;
+      border: none;
+      border-radius: var(--radius);
+      background: var(--copy-btn-bg);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity var(--transition);
+      z-index: 2;
+    }
+
+    .msg:hover .copy-btn {
+      opacity: 1;
+    }
+
+    .copy-btn:hover {
+      background: var(--copy-btn-hover);
+    }
+
+    .copy-btn svg {
+      width: 14px;
+      height: 14px;
+      stroke: var(--copy-btn-stroke);
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .copy-btn:hover svg {
+      stroke: var(--text);
+    }
+
+    .copy-btn.copied svg {
+      stroke: #22c55e;
+    }
+
+    /* User copy button */
+    .msg.user .copy-btn {
+      background: rgba(255,255,255,0.2);
+    }
+    .msg.user .copy-btn:hover {
+      background: rgba(255,255,255,0.35);
+    }
+    .msg.user .copy-btn svg {
+      stroke: rgba(255,255,255,0.85);
+    }
+    .msg.user .copy-btn:hover svg {
+      stroke: #fff;
+    }
+
+    [data-theme="light"] .msg.user .copy-btn {
+      background: rgba(0,0,0,0.1);
+    }
+    [data-theme="light"] .msg.user .copy-btn:hover {
+      background: rgba(0,0,0,0.2);
+    }
+    [data-theme="light"] .msg.user .copy-btn svg {
+      stroke: rgba(255,255,255,0.8);
+    }
+    [data-theme="light"] .msg.user .copy-btn:hover svg {
+      stroke: #fff;
+    }
+
+    /* ── Tool call cards (expandable) ────────────────────────────── */
+    .toolcall {
+      align-self: flex-start;
+      max-width: 720px;
+      width: 100%;
+      background: rgba(255,77,77,0.04);
+      border: 1px solid rgba(255,77,77,0.15);
+      border-radius: var(--radius);
+      overflow: visible;
+      animation: toolcallFade 0.25s ease-out forwards;
+      opacity: 0;
+    }
+
+    @keyframes toolcallFade {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .toolcall-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      cursor: pointer;
+      user-select: none;
+      transition: background var(--transition);
+    }
+
+    .toolcall-header:hover {
+      background: rgba(255,77,77,0.06);
+    }
+
+    .toolcall-icon {
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .toolcall-icon svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* Running spinner */
+    .toolcall-icon.spin {
+      animation: toolcallSpin 1s linear infinite;
+    }
+
+    @keyframes toolcallSpin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    /* Checkmark (success) fill */
+    .toolcall-icon.success svg {
+      stroke: #22c55e;
+    }
+
+    .toolcall-icon.error svg {
+      stroke: #ff4d4d;
+    }
+
+    .toolcall-name {
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--accent);
+      font-family: var(--font-body);
+      flex-shrink: 0;
+    }
+
+    .toolcall-duration {
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      font-weight: 400;
+      font-family: monospace;
+      margin-left: auto;
+    }
+
+    .toolcall-chevron {
+      font-size: 0.6rem;
+      color: var(--text-muted);
+      transition: transform var(--transition);
+      margin-left: 4px;
+    }
+
+    .toolcall-chevron.open {
+      transform: rotate(90deg);
+    }
+
+    .toolcall-body {
+      display: none;
+      padding: 10px 14px 14px 14px;
+      border-top: 1px solid rgba(255,77,77,0.08);
+      font-family: monospace;
+      font-size: 0.72rem;
+      line-height: 1.6;
+      color: var(--tool-body-text);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      max-height: 40vh;
+      overflow-y: auto;
+    }
+
+    .toolcall-body.open {
+      display: block;
+    }
+
+    .toolcall-body::-webkit-scrollbar {
+      width: 3px;
+    }
+
+    .toolcall-body::-webkit-scrollbar-thumb {
+      background: rgba(255,77,77,0.3);
+      border-radius: 2px;
+    }
+
+    .toolcall-body .toolcall-label {
+      font-size: 0.6rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .toolcall-body .toolcall-args {
+      margin-bottom: 10px;
+      padding: 6px 8px;
+      background: var(--tool-body-bg);
+      border-radius: 3px;
+      font-size: 0.68rem;
+      line-height: 1.5;
+      color: var(--tool-body-text);
+    }
+
+    .toolcall-body .toolcall-result {
+      padding: 6px 8px;
+      background: var(--tool-body-bg);
+      border-radius: 3px;
+      font-size: 0.68rem;
+      line-height: 1.5;
+      color: var(--tool-body-text);
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .toolcall-body .toolcall-result.error {
+      color: #ff6b6b;
+    }
+
+    /* ── Input bar ────────────────────────────────────────────────── */
+    #input-bar {
+      padding: 20px 32px;
+      padding-left: 44px;
+      border-top: 1px solid var(--border);
+      background: var(--bg);
+      display: flex;
+      gap: 16px;
+      align-items: flex-end;
+      position: relative;
+      z-index: 10;
+      animation: slideIn 0.5s ease-out 0.1s forwards;
+      opacity: 0;
+    }
+
+    #input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid var(--input-border);
+      border-radius: 0;
+      color: var(--text);
+      padding: 12px 4px;
+      font-size: 0.95rem;
+      font-family: var(--font-body);
+      font-weight: 400;
+      resize: none;
+      min-height: 48px;
+      max-height: 160px;
+      outline: none;
+      transition: all var(--transition);
+    }
+
+    #input:focus {
+      border-bottom-color: var(--accent);
+    }
+
+    #input::placeholder { 
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 0.85rem;
+    }
+
+    #send {
+      background: var(--accent);
+      color: var(--dark-text);
+      border: none;
+      border-radius: var(--radius);
+      padding: 12px 28px;
+      font-size: 1rem;
+      font-family: var(--font-display);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all var(--transition);
+      white-space: nowrap;
+      box-shadow: var(--shadow-hard);
+    }
+
+    #send:hover {
+      background: var(--accent-hover);
+      transform: translate(-2px, -2px);
+      box-shadow: var(--shadow-hard-hover);
+    }
+
+    #send:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    /* ── Typing indicator ─────────────────────────────────────────── */
+    .typing {
+      display: inline-flex;
+      gap: 8px;
+      padding: 14px 18px;
+      background: var(--agent-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      border-bottom-left-radius: 0;
+      align-self: flex-start;
+      animation: messageIn 0.25s ease-out forwards;
+    }
+
+    .typing span {
+      width: 10px; height: 10px;
+      border-radius: 2px;
+      background: var(--accent);
+      animation: pulse 1s infinite ease-in-out;
+    }
+
+    .typing span:nth-child(2) { animation-delay: 0.15s; }
+    .typing span:nth-child(3) { animation-delay: 0.3s; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.3; transform: scale(0.8); }
+      50% { opacity: 1; transform: scale(1); }
+    }
+
+    /* ── Grid lines (optional background) ─────────────────────────── */
+    .grid-bg {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 0;
+      background-image: 
+        linear-gradient(rgba(0,0,0,var(--grid-opacity)) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,0,0,var(--grid-opacity)) 1px, transparent 1px);
+      background-size: 80px 80px;
+    }
+
+    /* ── Widget card (non-streaming, final render) ────────────────────── */
+    .widget-card {
+      align-self: flex-start;
+      max-width: 720px;
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: visible;
+      animation: messageIn 0.5s ease-out forwards;
+      opacity: 0;
+    }
+
+    .widget-title {
+      padding: 8px 14px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .widget-placeholder {
+      height: 0px;
+      transition: height 0.3s ease-out;
+    }
+
+    .widget-placeholder.loaded {
+      display: none;
+    }
+
+    .widget-iframe {
+      display: block;
+      width: 100%;
+      border: none;
+      background: transparent;
+      height: 0px;
+    }
+
+    /* ── Streaming widget card (typewriter code view) ──────────────────── */
+    .widget-stream-card {
+      align-self: flex-start;
+      max-width: 720px;
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: visible;
+      animation: messageIn 0.3s ease-out forwards;
+      opacity: 0;
+      position: relative;
+    }
+
+    .widget-stream-header {
+      padding: 8px 14px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .widget-stream-header .stream-label {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .widget-stream-header .stream-status {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.58rem;
+      color: var(--accent);
+      font-weight: 600;
+      letter-spacing: 0.06em;
+    }
+
+    .stream-status .stream-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: streamPulse 1.2s infinite ease-in-out;
+    }
+
+    @keyframes streamPulse {
+      0%, 100% { opacity: 0.2; transform: scale(0.7); }
+      50% { opacity: 1; transform: scale(1.1); }
+    }
+
+    /* The streaming iframe IS the live preview surface (sandboxed from the
+       first delta). Height is driven entirely by sizeStreamIframe()
+       (collapse → measure → set), so no min-height here — it would clamp the
+       collapse step and reintroduce the feedback loop. */
+    .widget-stream-iframe {
+      display: block;
+      width: 100%;
+      border: none;
+      background: transparent;
+      height: 0;
+      overflow: hidden;
+    }
+
+    .widget-stream-card.finalized .widget-wave-overlay {
+      opacity: 0;
+      pointer-events: none;
+      display: none;
+    }
+
+    /* ── Diagonal crop decoration ─────────────────────────────────── */
+    .diagonal-top {
+      position: fixed;
+      bottom: 0;
+      right: 0;
+      width: 300px;
+      height: 150px;
+      background: var(--surface);
+      clip-path: polygon(100% 0, 100% 100%, 0 100%);
+      opacity: var(--diagonal-opacity);
+      z-index: 0;
+    }
+
+    /* ── Theme toggle button ──────────────────────────────────────── */
+    #theme-toggle {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all var(--transition);
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    #theme-toggle:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(255,77,77,0.06);
+    }
+
+    #theme-toggle svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .theme-icon-light { display: none; }
+    [data-theme="light"] .theme-icon-light { display: block; }
+    [data-theme="light"] .theme-icon-dark { display: none; }
+
+    /* ── Light theme adjustments ──────────────────────────────────── */
+    [data-theme="light"] .watermark {
+      color: #000000;
+    }
+
+    [data-theme="light"] .accent-stripe {
+      background: var(--accent);
+    }
+
+    [data-theme="light"] .msg.agent {
+      background: var(--agent-bg);
+      border: 1px solid var(--border);
+    }
+
+    [data-theme="light"] .grid-bg {
+      background-image: 
+        linear-gradient(rgba(0,0,0,0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,0,0,0.05) 1px, transparent 1px);
+      background-size: 80px 80px;
+    }
+
+    /* ── Widget Stream Overlay (during streaming) ──────────────────── */
+    .widget-wave-overlay {
+      position: absolute;
+      top: 33px;
+      left: 0;
+      width: 100%;
+      height: calc(100% - 33px);
+      z-index: 5;
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 1;
+      transition: opacity 0.5s ease-out;
+      background: rgba(0, 0, 0, 0.12);
+      backdrop-filter: blur(1px);
+      border-radius: 0 0 var(--radius) var(--radius);
+      overflow: hidden;
+    }
+
+    [data-theme="light"] .widget-wave-overlay {
+      background: rgba(255, 255, 255, 0.25);
+    }
+
+    .widget-wave-overlay.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Vertical scan lines */
+    .widget-wave-overlay .scanlines {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: repeating-linear-gradient(
+        90deg,
+        transparent,
+        transparent 3px,
+        rgba(255, 77, 77, 0.04) 3px,
+        rgba(255, 77, 77, 0.04) 4px
+      );
+      animation: scanlineScroll 2s linear infinite;
+    }
+
+    [data-theme="light"] .widget-wave-overlay .scanlines {
+      background: repeating-linear-gradient(
+        90deg,
+        transparent,
+        transparent 3px,
+        rgba(204, 51, 51, 0.05) 3px,
+        rgba(204, 51, 51, 0.05) 4px
+      );
+    }
+
+    @keyframes scanlineScroll {
+      0% { background-position: 0 0; }
+      100% { background-position: 8px 0; }
+    }
+
+    /* Vertical shimmer bar */
+    .widget-wave-overlay .shimmer-bar {
+      position: absolute;
+      top: 0;
+      left: -40%;
+      width: 40%;
+      height: 100%;
+      background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 77, 77, 0.08),
+        transparent
+      );
+      animation: shimmerSweep 2s ease-in-out infinite;
+    }
+
+    @keyframes shimmerSweep {
+      0% { left: -40%; }
+      100% { left: 140%; }
+    }
+
+    .widget-wave-overlay .wave-loading-text {
+      position: relative;
+      z-index: 6;
+      font-family: var(--font-display);
+      font-size: 1.4rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      text-shadow: 0 0 20px rgba(255, 77, 77, 0.4);
+      animation: waveTextPulse 1.5s ease-in-out infinite;
+    }
+
+    [data-theme="light"] .widget-wave-overlay .wave-loading-text {
+      text-shadow: 0 0 20px rgba(204, 51, 51, 0.3);
+    }
+
+    @keyframes waveTextPulse {
+      0%, 100% { opacity: 0.7; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.02); }
+    }
+
+    /* ── MCP UI card ─────────────────────────────────────────────── */
+    .mcp-ui-card {
+      align-self: flex-start;
+      max-width: 720px;
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid rgba(255,77,77,0.15);
+      border-radius: var(--radius);
+      overflow: visible;
+      animation: messageIn 0.5s ease-out forwards;
+      opacity: 0;
+    }
+
+    .mcp-ui-header {
+      padding: 8px 14px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--accent);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .mcp-ui-header .mcp-ui-label {
+      color: var(--accent);
+    }
+
+    .mcp-ui-header .mcp-ui-tool {
+      color: var(--text-muted);
+      margin-left: auto;
+      font-size: 0.6rem;
+    }
+
+    .mcp-ui-sandbox {
+      width: 100%;
+      height: 0;
+      border: none;
+      background: transparent;
+      display: block;
+      overflow: hidden;
+    }
+
+    /* ── Per-widget download button (shown once build completes) ── */
+    .widget-dl-btn {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border: none;
+      border-radius: 3px;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: all var(--transition);
+    }
+
+    .widget-dl-btn.visible {
+      display: flex;
+    }
+
+    .widget-dl-btn:hover {
+      background: rgba(255,77,77,0.1);
+      color: var(--accent);
+    }
+
+    .widget-dl-btn svg {
+      width: 14px;
+      height: 14px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Background elements -->
+  <div class="accent-stripe"></div>
+  <div class="watermark">AGENT</div>
+  <div class="grid-bg"></div>
+  <div class="diagonal-top"></div>
+
+
+
+  <header>
+    <span class="logo">V</span>
+    <h1>Agent</h1>
+    <div class="status">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-text">Connecting…</span>
+    </div>
+    <button id="theme-toggle" title="Toggle theme" aria-label="Toggle light/dark theme">
+      <svg class="theme-icon-dark" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="5"/>
+        <line x1="12" y1="1" x2="12" y2="3"/>
+        <line x1="12" y1="21" x2="12" y2="23"/>
+        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+        <line x1="1" y1="12" x2="3" y2="12"/>
+        <line x1="21" y1="12" x2="23" y2="12"/>
+        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+      </svg>
+      <svg class="theme-icon-light" viewBox="0 0 24 24">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
+  </header>
+
+  <div id="chat"></div>
+
+  <button id="jump-to-latest" type="button" aria-label="Jump to latest">
+    <span class="arrow">↓</span>
+    <span>Latest</span>
+    <span class="badge" hidden>0</span>
+  </button>
+
+  <form id="input-bar" autocomplete="off">
+    <textarea id="input" rows="1" placeholder="TYPE SOMETHING…" autofocus></textarea>
+    <button id="send" type="submit">SEND</button>
+  </form>
+
+  <script>
+    // ── DOM refs ──────────────────────────────────────────────────
+    const chatEl    = document.getElementById('chat')
+    const inputEl   = document.getElementById('input')
+    const sendBtn   = document.getElementById('send')
+    const dotEl     = document.getElementById('status-dot')
+    const statusEl  = document.getElementById('status-text')
+    const themeBtn  = document.getElementById('theme-toggle')
+    const htmlEl    = document.documentElement
+
+    // ── Theme ─────────────────────────────────────────────────────
+    function setTheme(dark) {
+      const theme = dark ? 'dark' : 'light'
+      htmlEl.setAttribute('data-theme', theme)
+      localStorage.setItem('theme', theme)
+      console.log('[Theme] Set to:', theme)
+    }
+
+    // Init theme: localStorage > dark default
+    const saved = localStorage.getItem('theme')
+    console.log('[Theme] Initial load from localStorage:', saved || 'dark (default)')
+    setTheme(saved !== 'light')
+
+    themeBtn.addEventListener('click', () => {
+      const current = htmlEl.getAttribute('data-theme')
+      setTheme(current !== 'dark')
+      // Sync theme to all tool-UI card iframes (scaffold + proxy)
+      const theme = htmlEl.getAttribute('data-theme')
+      console.log('[Theme] User toggled to:', theme, '| Syncing to', cards.size, 'card(s)')
+      for (const [, { iframe }] of cards) {
+        try {
+          iframe.contentWindow.postMessage({ type: 'THEME_CHANGE', theme }, '*')
+        } catch (e) {
+          console.warn('[Theme] Failed to sync to iframe:', e)
+        }
+      }
+    })
+
+    // ── Auto-scroll helper ────────────────────────────────────────
+    const SCROLL_THRESHOLD = 120 // px from bottom to count as "at bottom"
+    const jumpBtn   = document.getElementById('jump-to-latest')
+    const jumpBadge = jumpBtn.querySelector('.badge')
+    let unreadCount = 0
+
+    function isNearBottom() {
+      return chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < SCROLL_THRESHOLD
+    }
+
+    function scrollToBottom() {
+      chatEl.scrollTop = chatEl.scrollHeight
+    }
+
+    function updateJumpButton() {
+      const nearBottom = isNearBottom()
+      if (nearBottom) {
+        unreadCount = 0
+        jumpBtn.classList.remove('visible')
+        jumpBadge.hidden = true
+        jumpBadge.textContent = '0'
+      } else {
+        jumpBtn.classList.add('visible')
+        if (unreadCount > 0) {
+          jumpBadge.hidden = false
+          jumpBadge.textContent = String(unreadCount)
+        } else {
+          jumpBadge.hidden = true
+        }
+      }
+    }
+
+    // Track scroll position to show/hide the jump button
+    chatEl.addEventListener('scroll', updateJumpButton, { passive: true })
+
+    // Clicking the button jumps to latest and hides it
+    jumpBtn.addEventListener('click', () => {
+      scrollToBottom()
+      updateJumpButton()
+    })
+
+    // When new content arrives but user is scrolled up, bump unread counter
+    function notifyNewContent() {
+      if (!isNearBottom()) {
+        unreadCount++
+        updateJumpButton()
+      }
+    }
+
+    // ── WebSocket ─────────────────────────────────────────────────
+    const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    let ws
+
+    function connect() {
+      ws = new WebSocket(`${wsProto}//${location.host}/ws`)
+
+      ws.addEventListener('open', () => {
+        dotEl.classList.add('connected')
+        statusEl.textContent = 'ONLINE'
+        sendBtn.disabled = false
+      })
+
+      ws.addEventListener('close', () => {
+        dotEl.classList.remove('connected')
+        statusEl.textContent = 'OFFLINE'
+        sendBtn.disabled = true
+        setTimeout(connect, 2000)
+      })
+
+      ws.addEventListener('error', () => {
+        ws.close()
+      })
+
+      // Track active tool call elements by id
+      const toolEls = new Map()
+
+      // Track streaming state
+      let currentStreamEl = null
+      let currentStreamText = ''
+
+      ws.addEventListener('message', (evt) => {
+        const msg = JSON.parse(evt.data)
+
+        if (msg.type === 'tool_start') {
+          removeTyping()
+          toolEls.set(msg.id, appendToolCallStart(msg.id, msg.name, msg.args))
+          return
+        }
+
+        if (msg.type === 'tool_end') {
+          const el = toolEls.get(msg.id)
+          if (el) appendToolCallEnd(el, msg)
+          toolEls.delete(msg.id)
+          return
+        }
+
+        // Handle streaming events
+        if (msg.type === 'agent_stream_start') {
+          removeTyping()
+          currentStreamEl = appendMessage('agent', '')
+          currentStreamText = ''
+          return
+        }
+
+        if (msg.type === 'agent_stream_delta') {
+          if (currentStreamEl) {
+            currentStreamText += msg.text
+            const textEl = currentStreamEl.querySelector('div')
+            if (textEl) {
+              textEl.textContent = currentStreamText
+              if (isNearBottom()) scrollToBottom()
+            }
+          }
+          return
+        }
+
+        if (msg.type === 'agent_stream_end') {
+          if (currentStreamEl) {
+            const textEl = currentStreamEl.querySelector('div')
+            if (textEl) {
+              textEl.textContent = msg.text || currentStreamText
+            }
+          }
+          currentStreamEl = null
+          currentStreamText = ''
+          return
+        }
+
+        // Stream generator-tool (widget_renderer) input as it's generated,
+        // tagged with toolUseId so the client routes it to the right card.
+        if (msg.type === 'tool_input_delta') {
+          if (msg.toolUseId) streamDelta(msg.toolUseId, msg.delta)
+          return
+        }
+
+        // Handle tool stream updates (optional progress data)
+        if (msg.type === 'tool_stream_update') {
+          return
+        }
+
+        // Show typing indicator when agent starts processing
+        if (msg.type === 'typing') {
+          showTyping()
+          // New turn: clean up any streaming card orphaned from the prior turn
+          // (e.g. its mcp_ui finalize never arrived). Rendered partials stay.
+          abortStreamingCards()
+          return
+        }
+
+        removeTyping()
+
+        // Tool UI delivery. Generator tools (widget_renderer) arrive with
+        // streamFinal=true as an authoritative finalize of the streaming preview;
+        // static-UI tools arrive without it and render through the proxy.
+        if (msg.type === 'mcp_ui') {
+          if (msg.streamFinal) finalizeCard(msg.toolUseId, msg.html)
+          else renderStaticCard(msg.toolUseId, msg.tool, msg.html)
+          return
+        }
+
+        // A stream error (e.g. malformed tool JSON) aborts mid-turn — finalize
+        // any open streaming card before showing the error.
+        if (msg.type === 'error') {
+          abortStreamingCards()
+          appendMessage('error', msg.text)
+          return
+        }
+
+        appendMessage(msg.type, msg.text)
+      })
+    }
+
+    connect()
+
+    // ── Messages ──────────────────────────────────────────────────
+    function appendToolCallStart(id, name, args) {
+      const card = document.createElement('div')
+      card.classList.add('toolcall')
+      card.dataset.toolId = id
+      card.style.animationDelay = '0s'
+
+      // Header (always visible)
+      const header = document.createElement('div')
+      header.classList.add('toolcall-header')
+
+      const icon = document.createElement('span')
+      icon.classList.add('toolcall-icon', 'spin')
+      icon.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>`
+      header.appendChild(icon)
+
+      const nameEl = document.createElement('span')
+      nameEl.classList.add('toolcall-name')
+      nameEl.textContent = name
+      header.appendChild(nameEl)
+
+      const durationEl = document.createElement('span')
+      durationEl.classList.add('toolcall-duration')
+      durationEl.textContent = 'running…'
+      header.appendChild(durationEl)
+
+      const chevron = document.createElement('span')
+      chevron.classList.add('toolcall-chevron')
+      chevron.textContent = '▸'
+      header.appendChild(chevron)
+
+      card.appendChild(header)
+
+      // Body (expandable — hidden by default)
+      const body = document.createElement('div')
+      body.classList.add('toolcall-body')
+
+      const label = document.createElement('div')
+      label.classList.add('toolcall-label')
+      label.textContent = 'Arguments'
+      body.appendChild(label)
+
+      const argsEl = document.createElement('div')
+      argsEl.classList.add('toolcall-args')
+      argsEl.textContent = args || '{}'
+      body.appendChild(argsEl)
+
+      card.appendChild(body)
+
+      // Toggle expand on header click
+      header.addEventListener('click', () => {
+        body.classList.toggle('open')
+        chevron.classList.toggle('open')
+      })
+
+      chatEl.appendChild(card)
+      if (isNearBottom()) scrollToBottom()
+      else notifyNewContent()
+      return card
+    }
+
+    function appendToolCallEnd(card, msg) {
+      const icon = card.querySelector('.toolcall-icon')
+      icon.classList.remove('spin')
+      icon.classList.add(msg.status === 'error' ? 'error' : 'success')
+      icon.innerHTML = msg.status === 'error'
+        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`
+        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="16 10 11 15 8 12"/></svg>`
+
+      const durationEl = card.querySelector('.toolcall-duration')
+      const dur = msg.duration
+      if (dur < 1000) durationEl.textContent = dur + 'ms'
+      else durationEl.textContent = (dur / 1000).toFixed(1) + 's'
+
+      // Add result section to body
+      const body = card.querySelector('.toolcall-body')
+      if (msg.result) {
+        const resultLabel = document.createElement('div')
+        resultLabel.classList.add('toolcall-label')
+        resultLabel.textContent = 'Result'
+        resultLabel.style.marginTop = '10px'
+        body.appendChild(resultLabel)
+
+        const resultEl = document.createElement('div')
+        resultEl.classList.add('toolcall-result')
+        if (msg.status === 'error') resultEl.classList.add('error')
+        resultEl.textContent = msg.result.length > 500
+          ? msg.result.slice(0, 500) + '…'
+          : msg.result
+        body.appendChild(resultEl)
+      }
+    }
+
+    function appendMessage(type, text) {
+      // Allow empty text for streaming (will be filled incrementally)
+      if (type !== 'agent' && (!text || !text.trim())) return
+
+      const el = document.createElement('div')
+      el.classList.add('msg', type)
+
+      // Message text
+      const textEl = document.createElement('div')
+      textEl.textContent = text || ''
+      el.appendChild(textEl)
+
+      // Copy button (inside the message bubble, top-right)
+      if (type === 'user' || type === 'agent') {
+        const btn = document.createElement('button')
+        btn.classList.add('copy-btn')
+        btn.title = 'Copy'
+        btn.innerHTML = `<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`
+        btn.addEventListener('click', () => {
+          navigator.clipboard.writeText(el.textContent).then(() => {
+            btn.classList.add('copied')
+            btn.innerHTML = `<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>`
+            setTimeout(() => {
+              btn.classList.remove('copied')
+              btn.innerHTML = `<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`
+            }, 1500)
+          })
+        })
+        el.appendChild(btn)
+      }
+
+      chatEl.appendChild(el)
+      if (isNearBottom()) scrollToBottom()
+      else notifyNewContent()
+      return el
+    }
+
+    function showTyping() {
+      removeTyping()
+      const el = document.createElement('div')
+      el.classList.add('typing')
+      el.id = 'typing'
+      el.innerHTML = '<span></span><span></span><span></span>'
+      chatEl.appendChild(el)
+      if (isNearBottom()) scrollToBottom()
+    }
+
+    function removeTyping() {
+      const el = document.getElementById('typing')
+      if (el) el.remove()
+    }
+
+    // ── Widget Manager ──────────────────────────────────────────────
+    // ── Unified Tool-UI Renderer ──────────────────────────────────────
+    // One pipeline for generator tools (widget_renderer: model-generated HTML
+    // streamed via tool_input_delta, previewed, then finalized into a sandboxed
+    // scaffold iframe by an authoritative mcp_ui{streamFinal}) and static-UI
+    // tools (a ui://tools/<name>/html resource rendered through the nested
+    // proxy in sandbox.js). All cards live in one map keyed by toolUseId; one
+    // message router handles resize/theme/bridges for both.
+    const cards = new Map()           // toolUseId -> card state
+    const finalizedTools = new Set()  // toolUseIds already rendered (cross-turn dedup)
+
+    // Shared iframe page builder (used by both renderers). `theme`, when given,
+    // marks this as a standalone (downloaded) copy: it bakes a data-theme onto
+    // <html> and paints an opaque var(--surface) backdrop so the widget isn't
+    // left on the browser's default white. The live iframe passes no theme — it
+    // stays transparent (blends into the card surface) and is themed at runtime
+    // via postMessage (THEME_CHANGE), which a parentless downloaded file can't get.
+    function buildIframePage(widgetCode, theme) {
+      const themeAttr = theme ? ` data-theme="${theme}"` : ''
+      return `<!DOCTYPE html>
+<html${themeAttr}>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --bg: #0f0f0f;
+      --surface: #1a1a1a;
+      --text: #ffffff;
+      --text-muted: #666666;
+      --accent: #ff4d4d;
+      --accent-hover: #ff2020;
+      --border: rgba(255,255,255,0.08);
+      --radius: 4px;
+    }
+    [data-theme="light"] {
+      --bg: #f5f5f5;
+      --surface: #ffffff;
+      --text: #111111;
+      --text-muted: #888888;
+      --accent: #cc3333;
+      --accent-hover: #aa2222;
+      --border: rgba(0,0,0,0.08);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      min-height: 0;
+      font-family: 'Barlow', sans-serif;
+      background: ${theme ? 'var(--surface)' : 'transparent'};
+      color: var(--text);
+      line-height: 1.65;
+    }
+    body { padding: 16px; }
+    svg { display: block; width: 100%; height: auto; max-width: 100%; overflow: visible; }
+    svg text, svg rect, svg circle, svg path, svg line, svg polyline, svg g { color: var(--text); }
+  </style>
+  <script>
+    function applySvgCssVars() {
+      const style = getComputedStyle(document.documentElement)
+      const vars = ['--text', '--accent', '--text-muted', '--bg', '--surface', '--border']
+      document.querySelectorAll('svg [fill], svg [stroke]').forEach(el => {
+        vars.forEach(v => {
+          const val = style.getPropertyValue(v).trim()
+          if (el.getAttribute('fill') === 'var(' + v + ')') el.setAttribute('fill', val)
+          if (el.getAttribute('stroke') === 'var(' + v + ')') el.setAttribute('stroke', val)
+        })
+      })
+    }
+    window.addEventListener('message', function(e) {
+      if (e.data && e.data.type === 'THEME_CHANGE') document.documentElement.setAttribute('data-theme', e.data.theme)
+    })
+    window.addEventListener('load', function() { window.parent.postMessage({ type: 'THEME_REQUEST' }, '*') })
+    window.sendPrompt = function(text) { window.parent.postMessage({ type: 'WIDGET_SEND_PROMPT', text }, '*') }
+    window.openLink = function(url) { window.parent.postMessage({ type: 'WIDGET_OPEN_LINK', url }, '*') }
+    let lastHeight = 0
+    function reportHeight() {
+      const h = document.body.offsetHeight || document.documentElement.offsetHeight
+      if (h > 0 && h !== lastHeight) { lastHeight = h; window.parent.postMessage({ type: 'WIDGET_RESIZE', height: h }, '*') }
+    }
+    window.addEventListener('load', function() { applySvgCssVars(); setTimeout(reportHeight, 50) })
+    document.addEventListener('DOMContentLoaded', function() {
+      applySvgCssVars(); reportHeight()
+      // Observe from here — document.body is null while this <script> runs in <head>.
+      new MutationObserver(function() { clearTimeout(window._rht); window._rht = setTimeout(reportHeight, 150) }).observe(document.body, { subtree: true, childList: true })
+    })
+  <\/script>
+</head>
+<body>
+  ${widgetCode}
+</body>
+</html>`
+    }
+
+    // ── Streaming generator-tool cards (widget_renderer) ────────────
+    // streamDelta() runs on every tool_input_delta for a generator tool. It
+    // lazily creates a progressive-render card (once the title parses), decodes
+    // the partial HTML, and renders it as a live preview. The final sandboxed
+    // render happens ONLY in finalizeCard() on the authoritative mcp_ui
+    // {streamFinal} message — never from a client-side closing-quote heuristic.
+
+    function streamDelta(toolUseId, delta) {
+      let card = cards.get(toolUseId)
+      if (!card) {
+        card = {
+          kind: 'stream',
+          toolUseId,
+          title: null,
+          accumulatedJson: '',
+          finalized: false,
+          rafId: null,
+          pendingRender: null,
+          lastRenderTime: 0,
+          iframeReady: false,
+          pendingPreview: null,
+          hasContent: false,
+        }
+        cards.set(toolUseId, card)
+      }
+      if (card.finalized) return  // ignore late deltas after finalize
+
+      card.accumulatedJson += delta
+
+      // Create the card DOM once a title is available
+      if (!card.card) {
+        const titleMatch = card.accumulatedJson.match(/"title"\s*:\s*"([^"]*?)"/)
+        if (titleMatch) {
+          card.title = titleMatch[1]
+          buildStreamCardDom(card)
+        }
+      }
+
+      // Progressive preview from the partial widget_code
+      if (card.card) {
+        const htmlContent = extractWidgetCodePartial(card.accumulatedJson)
+        if (htmlContent) renderProgressive(card, decodeJsonString(htmlContent))
+      }
+
+      if (isNearBottom()) scrollToBottom()
+    }
+
+    /**
+     * Extract partial widget_code content from accumulated JSON.
+     * Returns the raw string value (still JSON-escaped).
+     */
+    function extractWidgetCodePartial(json) {
+      const keyIdx = json.indexOf('"widget_code"')
+      if (keyIdx === -1) return null
+
+      const afterKey = json.substring(keyIdx + 13)
+      const colonIdx = afterKey.indexOf(':')
+      if (colonIdx === -1) return null
+
+      const afterColon = afterKey.substring(colonIdx + 1).trimStart()
+      if (afterColon[0] !== '"') return null
+
+      return afterColon.substring(1)  // Everything after opening quote
+    }
+
+    /**
+     * Decode common JSON string escapes.
+     */
+    function decodeJsonString(str) {
+      // Decode JSON string escapes in order (backslash first to avoid double-decode)
+      return str
+        .replace(/\\\\/g, '\\')   // \\\\ → \\
+        .replace(/\\n/g, '\n')       // \\n → newline
+        .replace(/\\r/g, '\r')       // \\r → carriage return
+        .replace(/\\t/g, '\t')       // \\t → tab
+        .replace(/\\"/g, '"')       // \\" → quote
+        .replace(/\\\//g, '/')        // \\/ → slash
+        .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))  // \\uXXXX → char
+    }
+
+    // Cap the preview render rate (max once per RENDER_INTERVAL ms). Rendering
+    // on every delta rebuilds the partial HTML and reflows the iframe document,
+    // which reads as flicker as half-written tags complete; a steady cadence
+    // smooths it without losing the live feel. All batch state lives on the
+    // card so concurrent widgets don't clobber each other.
+    const RENDER_INTERVAL = 50
+    function renderProgressive(card, htmlContent) {
+      card.pendingRender = htmlContent
+      if (card.rafId) return
+      card.rafId = requestAnimationFrame(function tick() {
+        card.rafId = null
+        if (card.finalized) { card.pendingRender = null; return }
+        const now = performance.now()
+        if (card.lastRenderTime && now - card.lastRenderTime < RENDER_INTERVAL) {
+          card.rafId = requestAnimationFrame(tick)   // too soon — hold the latest partial
+          return
+        }
+        if (card.pendingRender) {
+          writePreview(card, card.pendingRender)
+          card.lastRenderTime = performance.now()
+          card.pendingRender = null
+        }
+      })
+    }
+
+    // Write the partial widget HTML into the sandboxed iframe's body. Buffers
+    // the latest partial until the scaffold srcdoc has loaded (contentDocument
+    // is null before load), then applies it once. innerHTML-inserted scripts
+    // don't run — that's fine for a preview; the final srcdoc at finalize runs
+    // them authoritatively.
+    function writePreview(card, htmlContent) {
+      if (card.finalized) return                   // stale render after finalize — drop it
+      if (!htmlContent || !htmlContent.trim()) return
+      const doc = card.iframe.contentDocument
+      if (card.iframeReady && doc && doc.body) {
+        doc.body.innerHTML = htmlContent
+        card.hasContent = true
+        sizeStreamIframe(card)
+      } else {
+        card.pendingPreview = htmlContent
+      }
+    }
+
+    // Parent-owned height sizing for stream cards. Collapse the iframe to 0
+    // FIRST so viewport-coupled content (height:100%, vh units) resolves to its
+    // true intrinsic height; measuring at the current height feeds back through
+    // the body and grows without bound. Reading scrollHeight forces one reflow
+    // at the collapsed size — no paint occurs at 0 because style changes within
+    // a tick batch until the function returns. Clamp to a min so the empty
+    // "BUILDING…" box still shows.
+    // Eased auto-scroll toward the bottom while a widget streams. Snapping
+    // scrollTop to the bottom on every render read as jerk; instead chase the
+    // (moving) bottom a fraction per frame for a smooth glide. Bails if the
+    // user scrolls away from the bottom.
+    let scrollEaseRaf = null
+    let prevEaseTop = -1
+    function scheduleScrollEase() {
+      if (scrollEaseRaf !== null) return
+      scrollEaseRaf = requestAnimationFrame(function easeStep() {
+        scrollEaseRaf = null
+        const target = chatEl.scrollHeight - chatEl.clientHeight
+        const cur = chatEl.scrollTop
+        // The ease only ever increases scrollTop (scrolling toward the bottom).
+        // If scrollTop decreased since the last step, the user scrolled up —
+        // stop following. The earlier !isNearBottom() check was wrong: it bailed
+        // whenever content growth pushed the gap past 120px, which killed follow.
+        if (prevEaseTop >= 0 && cur < prevEaseTop - 2) { prevEaseTop = -1; return }
+        const remaining = target - cur
+        if (remaining <= 1) { chatEl.scrollTop = target; prevEaseTop = target; return }
+        chatEl.scrollTop = cur + remaining * 0.4
+        prevEaseTop = chatEl.scrollTop
+        scheduleScrollEase()
+      })
+    }
+
+    function sizeStreamIframe(card) {
+      const doc = card.iframe.contentDocument
+      if (!doc || !doc.body) return
+      // Save scroll state: the collapse below changes the chat's scrollHeight
+      // mid-tick, which lets the browser clamp scrollTop away from where it
+      // was (yanking the view toward the top). We restore it after.
+      const wasNearBottom = isNearBottom()
+      const prevScrollTop = chatEl.scrollTop
+
+      card.iframe.style.height = '0px'
+      const h = doc.body.scrollHeight || doc.body.offsetHeight || 0
+      const min = card.finalized ? 0 : 48
+      card.iframe.style.height = Math.max(h, min) + 'px'
+
+      // Undo the mid-tick clamp (hold the exact prior position), then glide
+      // smoothly toward the new bottom instead of snapping every frame. All
+      // synchronous, so no paint ever occurs at height 0.
+      chatEl.scrollTop = prevScrollTop
+      if (wasNearBottom) scheduleScrollEase()
+    }
+
+    // Build the streaming card DOM (header + status, the sandboxed preview
+    // iframe, wave overlay) and attach refs to the card object.
+    function buildStreamCardDom(card) {
+      const cardEl = document.createElement('div')
+      cardEl.classList.add('widget-stream-card')
+
+      const header = document.createElement('div')
+      header.classList.add('widget-stream-header')
+
+      const label = document.createElement('span')
+      label.classList.add('stream-label')
+      label.textContent = card.title
+      header.appendChild(label)
+
+      const status = document.createElement('span')
+      status.classList.add('stream-status')
+      status.innerHTML = '<span class="stream-dot"></span> BUILDING...'
+      header.appendChild(status)
+
+      // Download button — hidden until finalizeCard reveals it (see comment in
+      // makeDownloadBtn). Reads card.fullHtml, which is set at finalize.
+      const downloadBtn = makeDownloadBtn(card)
+      header.appendChild(downloadBtn)
+      cardEl.appendChild(header)
+
+      // The iframe is the live preview surface — sandboxed from the first
+      // delta. Partial widget HTML is written to its body during streaming; the
+      // authoritative final render (scripts running) is set via srcdoc in
+      // finalizeCard. The empty scaffold is loaded once up front.
+      const iframe = document.createElement('iframe')
+      iframe.title = 'widget: ' + card.title
+      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
+      iframe.setAttribute('scrolling', 'no')
+      iframe.allow = 'fullscreen *; clipboard-write *'
+      iframe.classList.add('widget-stream-iframe')
+      cardEl.appendChild(iframe)
+
+      // Wave overlay — sibling on top of the streaming iframe while building.
+      // A sibling (not a child) so re-rendering the iframe body never destroys it.
+      const waveOverlay = document.createElement('div')
+      waveOverlay.classList.add('widget-wave-overlay')
+      waveOverlay.innerHTML = `
+        <div class="scanlines"></div>
+        <div class="shimmer-bar"></div>
+        <span class="wave-loading-text">Building</span>
+      `
+      cardEl.appendChild(waveOverlay)
+
+      chatEl.appendChild(cardEl)
+
+      card.card = cardEl
+      card.iframe = iframe
+      card.status = status
+      card.waveOverlay = waveOverlay
+      card.downloadBtn = downloadBtn
+      card.iframeReady = false
+      card.pendingPreview = null
+      card.hasContent = false
+
+      // Buffer any preview that arrives before the scaffold loads, then apply.
+      // On a plain load (empty scaffold, or the finalize srcdoc reload) size
+      // directly — the parent owns stream-card height.
+      iframe.addEventListener('load', () => {
+        card.iframeReady = true
+        if (!card.finalized && card.pendingPreview != null) {
+          const pending = card.pendingPreview
+          card.pendingPreview = null
+          writePreview(card, pending)
+        } else {
+          sizeStreamIframe(card)
+        }
+      })
+      iframe.srcdoc = buildIframePage('')
+
+      if (isNearBottom()) scrollToBottom()
+      else notifyNewContent()
+    }
+
+    // Authoritative finalize: swap the progressive preview for the sandboxed
+    // scaffold iframe. Idempotent on toolUseId. If no streaming card was ever
+    // created (e.g. deltas never carried a title), build one first, then swap.
+    function finalizeCard(toolUseId, html) {
+      let card = cards.get(toolUseId)
+      if (!card) {
+        card = {
+          kind: 'stream', toolUseId, title: 'widget', accumulatedJson: '',
+          finalized: false, rafId: null, pendingRender: null, lastRenderTime: 0,
+          iframeReady: false, pendingPreview: null, hasContent: false,
+        }
+        cards.set(toolUseId, card)
+        buildStreamCardDom(card)
+      }
+      if (card.finalized) return
+      card.finalized = true
+      card.pendingPreview = null   // srcdoc below is authoritative; don't let the load handler reapply a buffered preview
+      finalizedTools.add(toolUseId)
+
+      if (card.waveOverlay) card.waveOverlay.classList.add('hidden')
+      if (card.status) card.status.innerHTML = '<span class="stream-dot" style="background:#22c55e"></span> DONE'
+      if (card.card) card.card.classList.add('finalized')
+
+      // Live preview stays theme-driven by postMessage (no baked attribute);
+      // the download copy bakes in the current theme so the standalone file
+      // matches what's on screen instead of defaulting to dark.
+      card.iframe.srcdoc = buildIframePage(html)
+      card.fullHtml = buildIframePage(html, htmlEl.getAttribute('data-theme') || 'dark')
+      if (card.downloadBtn) card.downloadBtn.classList.add('visible')
+
+      if (isNearBottom()) scrollToBottom()
+      else notifyNewContent()
+    }
+
+    // Finalize-or-hide streaming cards left open by an aborted turn (stream
+    // error) or an orphaned prior turn (new typing). Rendered partials stay;
+    // empty cards are hidden so they don't hang on "BUILDING…".
+    function abortStreamingCards() {
+      for (const [, card] of cards) {
+        if (card.kind !== 'stream' || card.finalized || !card.card) continue
+        card.finalized = true
+        if (card.waveOverlay) card.waveOverlay.classList.add('hidden')
+        if (card.status) card.status.innerHTML = '<span class="stream-dot" style="background:#ef4444"></span> INCOMPLETE'
+        card.card.classList.add('finalized')
+        if (!card.hasContent) {
+          card.card.style.display = 'none'
+        }
+      }
+    }
+
+    // ── Static-UI cards (proxy path) ─────────────────────────────────
+    // Static-UI tools (ui://tools/<name>/html) are full HTML docs rendered
+    // through the nested proxy (sandbox.html + sandbox.js), which measures the
+    // inner content's height non-cooperatively and relays MCP_UI_RESIZE.
+    const MCP_RESOURCE_READY = 'ui/notifications/sandbox-resource-ready'
+    const MCP_PROXY_READY = 'ui/notifications/sandbox-proxy-ready'
+
+    function renderStaticCard(toolUseId, tool, html) {
+      if (finalizedTools.has(toolUseId)) return  // cross-turn dedup
+      finalizedTools.add(toolUseId)
+
+      const cardEl = document.createElement('div')
+      cardEl.classList.add('mcp-ui-card')
+
+      const header = document.createElement('div')
+      header.classList.add('mcp-ui-header')
+
+      const label = document.createElement('span')
+      label.classList.add('mcp-ui-label')
+      label.textContent = 'Tool UI'
+      header.appendChild(label)
+
+      const toolLabel = document.createElement('span')
+      toolLabel.classList.add('mcp-ui-tool')
+      toolLabel.textContent = tool
+      header.appendChild(toolLabel)
+
+      const iframe = document.createElement('iframe')
+      iframe.title = 'mcp-ui: ' + tool
+      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
+      iframe.setAttribute('scrolling', 'no')
+      iframe.classList.add('mcp-ui-sandbox')
+
+      // Static-UI cards arrive fully built, so the download button shows at
+      // once (stream cards reveal theirs at finalize). html is already a full
+      // standalone doc, so it's stored verbatim.
+      const card = { kind: 'static', toolUseId, card: cardEl, iframe, finalized: true, title: tool, fullHtml: html }
+      const downloadBtn = makeDownloadBtn(card)
+      downloadBtn.classList.add('visible')
+      header.appendChild(downloadBtn)
+
+      cardEl.appendChild(header)
+      cardEl.appendChild(iframe)
+
+      chatEl.appendChild(cardEl)
+      cards.set(toolUseId, card)
+
+      loadMcpSandbox(iframe, html)
+
+      if (isNearBottom()) scrollToBottom()
+      else notifyNewContent()
+    }
+
+    // Load the proxy and hand it the HTML once it signals ready.
+    function loadMcpSandbox(iframe, html) {
+      let settled = false
+      const listener = (event) => {
+        if (event.source === iframe.contentWindow && event.data?.method === MCP_PROXY_READY) {
+          if (settled) return
+          settled = true
+          window.removeEventListener('message', listener)
+          iframe.contentWindow.postMessage({
+            jsonrpc: '2.0',
+            method: MCP_RESOURCE_READY,
+            params: { html },
+          }, '*')
+        }
+      }
+      window.addEventListener('message', listener)
+      iframe.src = '/sandbox.html'
+
+      // Safety net: if the proxy never handshakes, show a safe in-sandbox error.
+      // The sandbox attribute is NEVER removed — the old fallback stripped it
+      // and loaded the HTML raw, which was a real escape hatch.
+      setTimeout(() => {
+        if (!settled) {
+          window.removeEventListener('message', listener)
+          iframe.srcdoc = '<body style="margin:0;padding:14px;font-family:system-ui;color:#888;font-size:13px;">Tool UI failed to load.</body>'
+          console.warn('[mcp-ui] proxy handshake timed out for', iframe.title)
+        }
+      }, 3000)
+    }
+
+    // ── Unified message router (scaffold + proxy cards) ──────────────
+    window.addEventListener('message', (event) => {
+      const msg = event.data
+      if (!msg || !msg.type) return
+
+      // Find the card (streaming scaffold iframe or static proxy iframe) whose
+      // contentWindow sent this message.
+      let card = null
+      for (const [, c] of cards) {
+        if (c.iframe && c.iframe.contentWindow === event.source) { card = c; break }
+      }
+      if (!card) return
+
+      switch (msg.type) {
+        case 'WIDGET_RESIZE':
+        case 'MCP_UI_RESIZE':
+          // Stream cards are sized by the parent (sizeStreamIframe) — ignore
+          // the scaffold's own reports, which measure at the live height and
+          // can feed back. Static proxy cards still size from these messages.
+          if (card.kind === 'stream') break
+          card.iframe.style.height = msg.height + 'px'
+          if (card.placeholder) card.placeholder.classList.add('loaded')
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (isNearBottom()) scrollToBottom()
+              else notifyNewContent()
+            })
+          })
+          break
+        case 'WIDGET_SEND_PROMPT':
+          inputEl.value = msg.text
+          inputEl.dispatchEvent(new Event('input'))
+          break
+        case 'WIDGET_OPEN_LINK':
+          window.open(msg.url, '_blank', 'noopener,noreferrer')
+          break
+        case 'THEME_REQUEST': {
+          const currentTheme = htmlEl.getAttribute('data-theme') || 'dark'
+          card.iframe.contentWindow.postMessage({ type: 'THEME_CHANGE', theme: currentTheme }, '*')
+          break
+        }
+      }
+    })
+
+    // ── Per-widget download ───────────────────────────────────────
+    // Each widget card gets its own download button in its header, revealed only
+    // once the build is complete (finalize for stream cards; immediately for
+    // static-UI cards). Saves the widget's full standalone HTML doc.
+    function downloadHtml(html, title) {
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      // Stamp the filename with a sortable date_time so repeated downloads of
+      // the same widget don't clobber each other: Title_YYYY-MM-DD_HHMMSS.html
+      const now = new Date()
+      const pad = (n) => String(n).padStart(2, '0')
+      const stamp = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) +
+        '_' + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds())
+      const base = String(title || '').replace(/[^a-z0-9-_]+/gi, '_').slice(0, 60).replace(/_+$/, '') || 'widget'
+      const a = document.createElement('a')
+      a.href = url
+      a.download = base + '_' + stamp + '.html'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    }
+
+    // card.fullHtml / card.title are set by the card's finalize path before the
+    // button is revealed, so the click handler can read them directly.
+    function makeDownloadBtn(card) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'widget-dl-btn'
+      btn.title = 'Download as HTML'
+      btn.setAttribute('aria-label', 'Download this widget as a standalone HTML file')
+      btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`
+      btn.addEventListener('click', () => {
+        if (card.fullHtml) downloadHtml(card.fullHtml, card.title)
+      })
+      return btn
+    }
+
+    // ── Input handling ────────────────────────────────────────────
+    function sendMessage() {
+      const text = inputEl.value.trim()
+      if (!text || ws.readyState !== WebSocket.OPEN) return
+      ws.send(text)
+      showTyping()
+      inputEl.value = ''
+      autoResize()
+    }
+
+    sendBtn.addEventListener('click', sendMessage)
+
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        sendMessage()
+      }
+    })
+
+    // Auto-resize textarea
+    function autoResize() {
+      inputEl.style.height = 'auto'
+      inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px'
+    }
+    inputEl.addEventListener('input', autoResize)
+  </script>
+
+</body>
+</html>
