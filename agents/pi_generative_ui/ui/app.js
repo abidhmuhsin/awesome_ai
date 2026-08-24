@@ -55,29 +55,35 @@ input.addEventListener("input", () => {
 // ============================================================================
 //  §2  STREAMING STATE
 // ============================================================================
-//  Per-turn state. Reset on `agent_end` (§3). A "turn" = everything between
-//  the user sending a message and the agent finishing (text + tools + widget).
+//  Per-turn state, scoped to a `turnState` object. A "turn" = everything
+//  between the user sending a message and the agent finishing.
+//
+//  The object is replaced at the start of each new turn (newTurn()). The old
+//  object lingers until its `agent_end` fires — but `agent_end` only cleans
+//  up the object it captured via closure, so overlapping turns never clobber
+//  each other. This prevents the race where Turn A's agent_end aborts
+//  Turn B's in-progress widgets.
 
 let evtSource = null;
 
-// --- Assistant text ---
-let currentAssistantDiv = null; // <div> we append text deltas into
-let currentText = "";           // accumulated assistant text this turn
+function newTurn() {
+  return {
+    currentAssistantDiv: null,
+    currentText: "",
+    widgetStack: [],       // in-flight widget previews only
+    thinkingDiv: null,
+    thinkingText: "",
+    openToolCards: [],     // [{ name, details, startTime }]
+    id: crypto.randomUUID(),
+  };
+}
+let turn = newTurn();
 
-// --- Widget preview (delegated to widgets.js) ---
-//  A stack of in-flight widget previews. Each widget_stream_start pushes a
-//  new entry; tool_end(show_visual) pops the matching one. This lets
-//  multiple widgets stream concurrently without overwriting each other.
-let widgetStack = [];   // [{ widget }]
-
-// --- Thinking (reasoning) ---
-let thinkingDiv = null;
-let thinkingText = "";
-
-// --- Tool call cards (keyed by tool name, since multiple can overlap) ---
-//  A stack of currently-open tool cards, newest last. tool_end matches by
-//  toolName; if multiple open cards share a name, the most recent is finished.
-let openToolCards = [];   // [{ name, details, startTime }]`
+// Per-turn end callbacks. When a turn starts, we register its cleanup here.
+// When agent_end fires, we look up the matching callback by turn ID and
+// invoke it — ensuring each turn only cleans up its own state, even if
+// a new turn has already started by the time agent_end arrives.
+const turnEndCallbacks = new Map();
 
 
 // ============================================================================
@@ -105,9 +111,9 @@ function connectSSE() {
   // textContent (not innerHTML) so streamed text is never parsed as markup.
   evtSource.addEventListener("text_delta", (e) => {
     const { delta } = JSON.parse(e.data);
-    if (!currentAssistantDiv) currentAssistantDiv = addMessageEl("assistant", "");
-    currentText += delta;
-    currentAssistantDiv.textContent = currentText;
+    if (!turn.currentAssistantDiv) turn.currentAssistantDiv = addMessageEl("assistant", "");
+    turn.currentText += delta;
+    turn.currentAssistantDiv.textContent = turn.currentText;
     chat.scrollTop = chat.scrollHeight;
   });
 
@@ -115,16 +121,16 @@ function connectSSE() {
   evtSource.addEventListener("thinking_delta", (e) => {
     const { delta } = JSON.parse(e.data);
     if (delta == null) return;
-    thinkingText += delta;
+    turn.thinkingText += delta;
 
-    if (!thinkingDiv) {
-      thinkingDiv = document.createElement("details");
-      thinkingDiv.className = "thinking-block";
-      thinkingDiv.innerHTML = `<summary>Thinking...</summary><div class="thinking-content"></div>`;
-      thinkingDiv.open = true;
-      chat.appendChild(thinkingDiv);
+    if (!turn.thinkingDiv) {
+      turn.thinkingDiv = document.createElement("details");
+      turn.thinkingDiv.className = "thinking-block";
+      turn.thinkingDiv.innerHTML = `<summary>Thinking...</summary><div class="thinking-content"></div>`;
+      turn.thinkingDiv.open = true;
+      chat.appendChild(turn.thinkingDiv);
     }
-    thinkingDiv.querySelector(".thinking-content").textContent = thinkingText;
+    turn.thinkingDiv.querySelector(".thinking-content").textContent = turn.thinkingText;
     chat.scrollTop = chat.scrollHeight;
   });
 
@@ -136,13 +142,11 @@ function connectSSE() {
     const card = buildToolCard(toolName, args);
     chat.appendChild(card);
     chat.scrollTop = chat.scrollHeight;
-    openToolCards.push({ name: toolName, details: card, startTime });
+    turn.openToolCards.push({ name: toolName, details: card, startTime });
 
     // show_visual is executing → the streamed code is final; mark the title.
-    // No separate timer here — elapsed is computed from widget_stream_start
-    // in tool_end so it captures the full wait (streaming + save).
     if (toolName === "show_visual") {
-      const entry = widgetStack[widgetStack.length - 1];
+      const entry = turn.widgetStack[turn.widgetStack.length - 1];
       if (entry) entry.widget.markFinalizing(args?.title);
     }
   });
@@ -151,17 +155,17 @@ function connectSSE() {
     const { toolName, isError, details } = JSON.parse(e.data);
     // Match the most recent OPEN card for this tool name (LIFO).
     const idx = (() => {
-      for (let i = openToolCards.length - 1; i >= 0; i--) {
-        if (openToolCards[i].name === toolName) return i;
+      for (let i = turn.openToolCards.length - 1; i >= 0; i--) {
+        if (turn.openToolCards[i].name === toolName) return i;
       }
       return -1;
     })();
-    const entry = idx >= 0 ? openToolCards.splice(idx, 1)[0] : null;
+    const entry = idx >= 0 ? turn.openToolCards.splice(idx, 1)[0] : null;
     finishToolCard(entry?.details, isError, entry?.startTime);
 
     // show_visual finished → pop the matching widget and finalize it.
     if (toolName === "show_visual" && details?.filepath) {
-      const entry = widgetStack.pop();
+      const entry = turn.widgetStack.pop();
       if (entry) {
         // Use the streaming start time (not tool_start) so the elapsed
         // includes the full wait: LLM code generation + file save.
@@ -177,18 +181,14 @@ function connectSSE() {
   });
 
   // ---- Widget ARGUMENT streaming (the live preview) ----
-  // These are NOT tool executions — they're the LLM streaming the *arguments*
-  // of the show_visual tool call before it runs. The server parses the partial
-  // JSON and sends the clean widget_code string each tick.
-
   evtSource.addEventListener("widget_stream_start", async () => {
     const widget = await widgets.startPreview(chat, "Building widget...");
-    widgetStack.push({ widget, startTime: Date.now() });
+    turn.widgetStack.push({ widget, startTime: Date.now() });
   });
 
   evtSource.addEventListener("widget_stream_delta", (e) => {
     const { code } = JSON.parse(e.data);
-    const top = widgetStack[widgetStack.length - 1];
+    const top = turn.widgetStack[turn.widgetStack.length - 1];
     if (top && typeof code === "string") {
       top.widget.update(code);
     }
@@ -196,23 +196,22 @@ function connectSSE() {
 
   evtSource.addEventListener("widget_stream_end", (e) => {
     const { code, mode, title } = JSON.parse(e.data);
-    const top = widgetStack[widgetStack.length - 1];
+    const top = turn.widgetStack[turn.widgetStack.length - 1];
     if (top) top.widget.commit(code, mode, title);
   });
 
-  // ---- Turn complete: reset all per-turn state ----
-  // If a widget was streaming but never got its finalize (agent ended early,
-  // errored, or produced no show_visual result), abort it: partial renders
-  // stay visible but stop pulsing "BUILDING…"; empty cards are removed.
+  // ---- Turn complete: clean up THIS turn's state only ----
+  // Uses turnEndCallbacks to find the cleanup function registered when
+  // this turn started. This prevents the race where Turn A's agent_end
+  // accidentally cleans up Turn B's state (which already replaced `turn`).
   evtSource.addEventListener("agent_end", () => {
-    currentAssistantDiv = null;
-    currentText = "";
-    // Abort any widgets still in the stream (never got their tool_end).
-    for (const entry of widgetStack) entry.widget.abort();
-    widgetStack = [];
-    thinkingDiv = null;
-    thinkingText = "";
-    openToolCards = [];
+    // The oldest pending callback is the one that just ended.
+    // (Newer turns register AFTER this one, so they appear later in insertion order.)
+    const [endedId, cleanup] = turnEndCallbacks.entries().next().value || [];
+    if (cleanup) {
+      cleanup();
+      turnEndCallbacks.delete(endedId);
+    }
     setSending(false);
   });
 
@@ -236,6 +235,16 @@ widgets.onWidgetPrompt((text) => {
   if (!text || sending) return;
   addMessageEl("user", text, true);
   setSending(true);
+  turn = newTurn();
+  turnEndCallbacks.set(turn.id, () => {
+    turn.currentAssistantDiv = null;
+    turn.currentText = "";
+    for (const entry of turn.widgetStack) entry.widget.abort();
+    turn.widgetStack = [];
+    turn.thinkingDiv = null;
+    turn.thinkingText = "";
+    turn.openToolCards = [];
+  });
   sendChat(`[widget] ${text}`);
 });
 
@@ -394,6 +403,17 @@ form.addEventListener("submit", (e) => {
   input.value = "";
   input.style.height = "auto";
   setSending(true);
+  turn = newTurn();
+  // Register cleanup for this turn — agent_end will invoke it.
+  turnEndCallbacks.set(turn.id, () => {
+    turn.currentAssistantDiv = null;
+    turn.currentText = "";
+    for (const entry of turn.widgetStack) entry.widget.abort();
+    turn.widgetStack = [];
+    turn.thinkingDiv = null;
+    turn.thinkingText = "";
+    turn.openToolCards = [];
+  });
   sendChat(text);
 });
 
