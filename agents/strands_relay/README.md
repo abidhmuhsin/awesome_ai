@@ -1,13 +1,15 @@
-# Visual Agent
+# Strands Relay
 
-Minimal Strands Agents TypeScript example using the OpenAI API with custom tools and MCP (Model Context Protocol) integration.
+Multi-transport Strands Agents service using the OpenAI API with custom tools, MCP (Model Context Protocol) integration, and generative UI widgets. One agent core (`createAgent()`), relayed to CLI, WebSocket web UI, and Telegram.
 
 ## Features
 
+- One shared agent factory relayed across pluggable transports (CLI, WebSocket UI, Telegram bot)
 - Custom `hello` and `byebye` local tools
-- MCP (Model Context Protocol) integration with stdio, HTTP, and SSE transports
+- MCP (Model Context Protocol) integration with stdio, HTTP, and SSE transports — both client and server
 - OpenAI-compatible model support
 - Zod schema validation for tool parameters
+- Generative UI: inline SVG/HTML widgets streamed to the web UI in sandboxed iframes
 - Web UI with real-time WebSocket chat
 
 ## Setup
