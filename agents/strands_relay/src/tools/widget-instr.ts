@@ -30,11 +30,14 @@ Use only these CSS variables:
 Do not hardcode theme colors unless explicitly requested.
 
 ## Layout
+- Develop mobile-first responsive design — start with base styles for small screens, then use min-width media queries to enhance for larger viewports
+- Optimal design width: 720px — design spacing, grids, and sizing for this width as the sweet spot
+- Use fluid, relative units (%, rem, em, vw, ch) instead of fixed pixel widths for containers, spacing, and typography
+- Container should adapt to available space (width: 100%) — avoid hardcoding max-width constraints
+- Use CSS Grid or Flexbox with responsive patterns (auto-fit, auto-fill, minmax())
+- Avoid fixed pixel widths that prevent scaling (e.g. width: 900px)
 - Keep background transparent
 - Avoid top-level padding
-- Mobile responsive by default
-- Avoid fixed widths
-- Prefer flexbox or grid
 - Do not depend on parent styles
 
 ## Reliability
@@ -74,7 +77,7 @@ Example:
 
 <svg
   xmlns="http://www.w3.org/2000/svg"
-  viewBox="0 0 800 400"
+  viewBox="0 0 700 400"
 >
 
 ## Styling
@@ -277,6 +280,8 @@ inside Chart.js config.
 
 Always:
 
+- Set Chart.defaults.color = theme.text BEFORE creating chart (CRITICAL for label colors)
+- Set Chart.defaults.borderColor = 'transparent' BEFORE creating chart
 - Verify canvas exists before initializing
 - Wrap Chart.js creation in try/catch
 - Avoid runtime crashes silently breaking UI
@@ -357,6 +362,10 @@ const canvas = document.getElementById('chart_12345')
 
 if (canvas) {
   try {
+    // Set global defaults BEFORE creating chart
+    Chart.defaults.color = theme.text
+    Chart.defaults.borderColor = 'transparent'
+    
     new Chart(canvas, {
       type: 'bar', // can be bar, line, doughnut, etc.
       data: {

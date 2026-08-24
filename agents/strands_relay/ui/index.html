@@ -751,6 +751,7 @@
       border: none;
       background: transparent;
       height: 0;
+      overflow: hidden;
     }
 
     .widget-stream-card.finalized .widget-wave-overlay {
@@ -974,6 +975,42 @@
       border: none;
       background: transparent;
       display: block;
+      overflow: hidden;
+    }
+
+    /* ── Per-widget download button (shown once build completes) ── */
+    .widget-dl-btn {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border: none;
+      border-radius: 3px;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: all var(--transition);
+    }
+
+    .widget-dl-btn.visible {
+      display: flex;
+    }
+
+    .widget-dl-btn:hover {
+      background: rgba(255,77,77,0.1);
+      color: var(--accent);
+    }
+
+    .widget-dl-btn svg {
+      width: 14px;
+      height: 14px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
   </style>
 </head>
@@ -1393,10 +1430,16 @@
     const cards = new Map()           // toolUseId -> card state
     const finalizedTools = new Set()  // toolUseIds already rendered (cross-turn dedup)
 
-    // Shared iframe page builder (used by both renderers)
-    function buildIframePage(widgetCode) {
+    // Shared iframe page builder (used by both renderers). `theme`, when given,
+    // marks this as a standalone (downloaded) copy: it bakes a data-theme onto
+    // <html> and paints an opaque var(--surface) backdrop so the widget isn't
+    // left on the browser's default white. The live iframe passes no theme — it
+    // stays transparent (blends into the card surface) and is themed at runtime
+    // via postMessage (THEME_CHANGE), which a parentless downloaded file can't get.
+    function buildIframePage(widgetCode, theme) {
+      const themeAttr = theme ? ` data-theme="${theme}"` : ''
       return `<!DOCTYPE html>
-<html>
+<html${themeAttr}>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1427,7 +1470,7 @@
       width: 100%;
       min-height: 0;
       font-family: 'Barlow', sans-serif;
-      background: transparent;
+      background: ${theme ? 'var(--surface)' : 'transparent'};
       color: var(--text);
       line-height: 1.65;
     }
@@ -1666,6 +1709,11 @@
       status.classList.add('stream-status')
       status.innerHTML = '<span class="stream-dot"></span> BUILDING...'
       header.appendChild(status)
+
+      // Download button — hidden until finalizeCard reveals it (see comment in
+      // makeDownloadBtn). Reads card.fullHtml, which is set at finalize.
+      const downloadBtn = makeDownloadBtn(card)
+      header.appendChild(downloadBtn)
       cardEl.appendChild(header)
 
       // The iframe is the live preview surface — sandboxed from the first
@@ -1675,6 +1723,7 @@
       const iframe = document.createElement('iframe')
       iframe.title = 'widget: ' + card.title
       iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
+      iframe.setAttribute('scrolling', 'no')
       iframe.allow = 'fullscreen *; clipboard-write *'
       iframe.classList.add('widget-stream-iframe')
       cardEl.appendChild(iframe)
@@ -1696,6 +1745,7 @@
       card.iframe = iframe
       card.status = status
       card.waveOverlay = waveOverlay
+      card.downloadBtn = downloadBtn
       card.iframeReady = false
       card.pendingPreview = null
       card.hasContent = false
@@ -1742,7 +1792,12 @@
       if (card.status) card.status.innerHTML = '<span class="stream-dot" style="background:#22c55e"></span> DONE'
       if (card.card) card.card.classList.add('finalized')
 
+      // Live preview stays theme-driven by postMessage (no baked attribute);
+      // the download copy bakes in the current theme so the standalone file
+      // matches what's on screen instead of defaulting to dark.
       card.iframe.srcdoc = buildIframePage(html)
+      card.fullHtml = buildIframePage(html, htmlEl.getAttribute('data-theme') || 'dark')
+      if (card.downloadBtn) card.downloadBtn.classList.add('visible')
 
       if (isNearBottom()) scrollToBottom()
       else notifyNewContent()
@@ -1791,16 +1846,25 @@
       toolLabel.textContent = tool
       header.appendChild(toolLabel)
 
-      cardEl.appendChild(header)
-
       const iframe = document.createElement('iframe')
       iframe.title = 'mcp-ui: ' + tool
       iframe.sandbox = 'allow-scripts allow-same-origin allow-forms'
+      iframe.setAttribute('scrolling', 'no')
       iframe.classList.add('mcp-ui-sandbox')
+
+      // Static-UI cards arrive fully built, so the download button shows at
+      // once (stream cards reveal theirs at finalize). html is already a full
+      // standalone doc, so it's stored verbatim.
+      const card = { kind: 'static', toolUseId, card: cardEl, iframe, finalized: true, title: tool, fullHtml: html }
+      const downloadBtn = makeDownloadBtn(card)
+      downloadBtn.classList.add('visible')
+      header.appendChild(downloadBtn)
+
+      cardEl.appendChild(header)
       cardEl.appendChild(iframe)
 
       chatEl.appendChild(cardEl)
-      cards.set(toolUseId, { kind: 'static', toolUseId, card: cardEl, iframe, finalized: true })
+      cards.set(toolUseId, card)
 
       loadMcpSandbox(iframe, html)
 
@@ -1881,6 +1945,44 @@
         }
       }
     })
+
+    // ── Per-widget download ───────────────────────────────────────
+    // Each widget card gets its own download button in its header, revealed only
+    // once the build is complete (finalize for stream cards; immediately for
+    // static-UI cards). Saves the widget's full standalone HTML doc.
+    function downloadHtml(html, title) {
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      // Stamp the filename with a sortable date_time so repeated downloads of
+      // the same widget don't clobber each other: Title_YYYY-MM-DD_HHMMSS.html
+      const now = new Date()
+      const pad = (n) => String(n).padStart(2, '0')
+      const stamp = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) +
+        '_' + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds())
+      const base = String(title || '').replace(/[^a-z0-9-_]+/gi, '_').slice(0, 60).replace(/_+$/, '') || 'widget'
+      const a = document.createElement('a')
+      a.href = url
+      a.download = base + '_' + stamp + '.html'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    }
+
+    // card.fullHtml / card.title are set by the card's finalize path before the
+    // button is revealed, so the click handler can read them directly.
+    function makeDownloadBtn(card) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'widget-dl-btn'
+      btn.title = 'Download as HTML'
+      btn.setAttribute('aria-label', 'Download this widget as a standalone HTML file')
+      btn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`
+      btn.addEventListener('click', () => {
+        if (card.fullHtml) downloadHtml(card.fullHtml, card.title)
+      })
+      return btn
+    }
 
     // ── Input handling ────────────────────────────────────────────
     function sendMessage() {
